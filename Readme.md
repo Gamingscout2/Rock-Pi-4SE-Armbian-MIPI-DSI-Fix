@@ -2,6 +2,17 @@
 
 This project configures the Raspberry Pi 7-inch / DFRobot DFR0678 800x480 DSI touchscreen for a Radxa ROCK 4SE running Armbian. The display uses the ROCK 4SE's DSI1 interface and a Toshiba TC358762 bridge. The ATTiny MCU handles panel power and backlight; an FT5406 controller provides touch input.
 
+Based on the Radxa OS implementation, which uses the GPL 2.0 License.
+Radxa BSP Kernel for Rock 4 SE: https://github.com/radxa/kernel/tree/linux-6.1-stan-rkr5.1
+
+Armbian also uses the GPL 2.0 license, so this repo uses the GPL 2.0 license.
+
+Radxa, Rock Pi, and Rock 4 SE are registered trademarks of Radxa Computer (Shenzhen) Co., Ltd. (or Radxa Limited) 
+
+Armbian is a registered trademark of Armbian d.o.o.
+
+Please note this software is provided with absolutely no warranty, it is recommended you verify the contents of the patches before building your own kernel. Proceed at your own risk.
+
 ## What the display needs
 
 The working `v9` configuration depends on these kernel changes:
