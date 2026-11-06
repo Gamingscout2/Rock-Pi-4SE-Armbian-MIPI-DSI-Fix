@@ -65,4 +65,4 @@ sudo ./touch-orientation.sh 270
 
 ## AI Use Disclosure
 
-AI tools assisted with debugging and source-code comparison during the development of this repository. The tools used were Cursor and Claude Sonnet 5.5.
+AI tools assisted with debugging and source-code comparison during the development of this repository. See ['AI_Disclosure.md'](AI_Disclosure.md) 
