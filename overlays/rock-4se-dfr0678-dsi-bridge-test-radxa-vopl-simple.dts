@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Experimental DFR0678 panel-descriptor test on Radxa's VOPL-to-DSI1 route.
+ *
+ * This keeps the test-radxa-vopl DSI, PLL, lane-rate, bridge, and power setup,
+ * but uses the Powertip panel-simple descriptor for DPI metadata. The
+ * Build 19 dfr0678-radxa-timing.patch must set that descriptor's mode to the
+ * tested 26 MHz 800x480 timing. DSI0 supplies the shared PHY PLL while its
+ * display host remains disabled.
+ * Do not load with another overlay that claims I2C1 address 0x45.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+		power-supply = <&dfr0678_mcu>;
+		backlight = <&dfr0678_mcu>;
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	dfr0678_mcu: regulator@45 {
+		compatible = "raspberrypi,7inch-touchscreen-panel-regulator";
+		reg = <0x45>;
+	};
+};
+
+&mipi1_in_vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopl {
+	status = "okay";
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+	rockchip,lane-rate = <696>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+		vddc-supply = <&dfr0678_mcu>;
+		toshiba,radxa-init;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};

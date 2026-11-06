@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Raspberry Pi 7" / DFR0678 touchscreen on the Radxa ROCK 4SE, Radxa-style,
+ * variant: MCU power-up and bridge programming in bridge pre_enable.
+ *
+ * Identical to rock-4se-rpi7-radxa-mcu, except that the DSI host is still in
+ * command mode (no HS clock, no video) while the MCU is power-cycled and the
+ * bridge is programmed, as the legacy Raspberry Pi panel driver did. Try this
+ * if the default variant leaves the screen blank.
+ *
+ * Needs the kernel patches rk3399-dsi1-dsi0-pll, dsi-lane-rate-override,
+ * dfr0678-radxa-timing and tc358762-rpi7-radxa-bringup, and no other overlay
+ * touching I2C1 address 0x45.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	rpi7_mcu: mcu@45 {
+		compatible = "rockpi_mcu";
+		reg = <0x45>;
+	};
+};
+
+&mipi1_in_vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopl {
+	status = "okay";
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* DSI0 supplies the shared PHY PLL while staying disabled */
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+	rockchip,lane-rate = <696>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+
+		toshiba,radxa-rpi7-init;
+		toshiba,radxa-mcu = <&rpi7_mcu>;
+		toshiba,debug-readback;
+		toshiba,init-in-pre-enable;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};

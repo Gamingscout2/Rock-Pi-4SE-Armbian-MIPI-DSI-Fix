@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Raspberry Pi 7" / DFR0678 touchscreen on the Radxa ROCK 4SE:
+ * Radxa-style bring-up + the VOP DSI fix. This is the overlay that puts the
+ * text console (and X11/Wayland) on the DSI panel.
+ *
+ * Identical to rock-4se-rpi7-radxa-mcu-vopl (DSI1 fed by VOPL, VOPB disabled,
+ * Radxa-style MCU/bridge bring-up) plus one property on the VOPL node, read by
+ * the kernel patch rockchip-vop-dsi-bsp-parity:
+ *
+ *   rockchip,dsi-data01-swap  sets VOP SYS_CTRL bit 17 (the Radxa BSP sets it
+ *                             for every DSI output). This is the bit that
+ *                             makes pixels reach the panel (tests/0005, A4/B5).
+ *
+ * Test 0006 (session 18) showed that with the swap set, every dclk/pin polarity
+ * combination tried (including mainline's own: dclk_pol 1, pin_pol from the mode)
+ * gives a good picture, so the polarity is left alone. The patch still accepts
+ * rockchip,dsi-dclk-pol / rockchip,dsi-pin-pol if they are ever needed.
+ *
+ * Side effect: HDMI can only use VOPL, so do not use HDMI at the same time.
+ *
+ * Needs the kernel patches rk3399-dsi1-dsi0-pll, dsi-lane-rate-override,
+ * dfr0678-radxa-timing, tc358762-rpi7-radxa-bringup and
+ * rockchip-vop-dsi-bsp-parity, and no other overlay touching I2C1 address 0x45.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	rpi7_mcu: mcu@45 {
+		compatible = "rockpi_mcu";
+		reg = <0x45>;
+	};
+};
+
+&vopb {
+	status = "disabled";
+};
+
+&vopl {
+	rockchip,dsi-data01-swap;
+};
+
+&mipi1_in_vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopl {
+	status = "okay";
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* DSI0 supplies the shared PHY PLL while staying disabled */
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+	rockchip,lane-rate = <696>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+
+		toshiba,radxa-rpi7-init;
+		toshiba,radxa-mcu = <&rpi7_mcu>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};

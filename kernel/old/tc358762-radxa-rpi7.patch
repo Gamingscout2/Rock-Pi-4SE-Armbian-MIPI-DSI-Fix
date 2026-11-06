@@ -1,0 +1,112 @@
+--- a/drivers/gpu/drm/bridge/tc358762.c
++++ b/drivers/gpu/drm/bridge/tc358762.c
+@@ -26,6 +26,13 @@
+ #include <linux/regulator/consumer.h>
+ #include <drm/drm_bridge.h>
+ #include <drm/drm_print.h>
++#define LCD_HSR_HBPR		0x24
++#define LCD_HDISPR_HFPR		0x28
++#define LCD_VSR_VBPR		0x2c
++#define LCD_VDISPR_VFPR		0x30
++#define LCD_VFUEN		0x34
++#define LCD_RDPKTLN		0x10
+ 
+ #define VER_REG_CHIPID		0x0000
+ #define VER_REG_INITIAL		0x0002
+@@ -80,6 +87,7 @@ struct tc358762 {
+ 	struct gpio_desc *reset_gpio;
+ 	struct gpio_desc *enable_gpio;
+ 	bool pre_enabled;
++	bool radxa_rpi_mode;
+ };
+ 
+ static int tc358762_clear_error(struct mipi_dsi_device *dsi)
+@@ -196,6 +204,56 @@ static int tc358762_init(struct tc358762 *ctx)
+ 	return 0;
+ }
+ 
++static int tc358762_init_rpi7_radxa(struct tc358762 *ctx)
++{
++	struct mipi_dsi_device *dsi = ctx->dsi;
++	int ret;
++
++	ret = tc358762_write(dsi, DSI_LANEENABLE, 0x00000003);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, PPI_D0S_CLRSIPOCOUNT, 0x0c);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, PPI_D1S_CLRSIPOCOUNT, 0x0c);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, PPI_D0S_ATMR, 0x00);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, PPI_D1S_ATMR, 0x00);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, PPI_LPTXTIMECNT, 0x15);
++	if (ret < 0)
++		return ret;
++
++	ret = tc358762_write(dsi, SPICMR, 0x60);
++	if (ret < 0)
++		return ret;
++
++	tc358762_write(dsi, LCDCTRL, 0x00100152);
++	tc358762_write(dsi, LCD_HSR_HBPR, 0x002c0002);
++	tc358762_write(dsi, LCD_HDISPR_HFPR, 0x00360320);
++	tc358762_write(dsi, LCD_VSR_VBPR, 0x00160002);
++	tc358762_write(dsi, LCD_VDISPR_VFPR, 0x003101e0);
++	tc358762_write(dsi, LCD_VFUEN, 0x01);
++	tc358762_write(dsi, SYSCTRL, 0x040f);
++	tc358762_write(dsi, PPI_STARTPPI, 0x01);
++	tc358762_write(dsi, DSI_STARTDSI, 0x01);
++	tc358762_write(dsi, LCD_RDPKTLN, 0x03);
++
++	usleep_range(10, 20);
++	return tc358762_clear_error(ctx->dsi);
++}
++
+ static int tc358762_enable(struct drm_bridge *bridge)
+ {
+ 	struct tc358762 *ctx = bridge_to_tc358762(bridge);
+@@ -205,7 +263,11 @@ static int tc358762_enable(struct drm_bridge *bridge)
+ 
+ 	tc358762_reset(ctx);
+ 
+-	return tc358762_init(ctx);
++	if (ctx->radxa_rpi_mode)
++		return tc358762_init_rpi7_radxa(ctx);
++	else
++		return tc358762_init(ctx);
+ }
+ 
+ static void tc358762_disable(struct drm_bridge *bridge)
+@@ -300,6 +362,10 @@ static int tc358762_probe(struct mipi_dsi_device *dsi)
+ 	if (IS_ERR(ctx->reset_gpio))
+ 		return PTR_ERR(ctx->reset_gpio);
+ 
++	if (of_property_read_bool(dev->of_node, "toshiba,radxa-rpi7-init"))
++		ctx->radxa_rpi_mode = true;
++	else
++		ctx->radxa_rpi_mode = false;
+ 
+ 	ctx->enabled = false;
+ 	ctx->prepared = false;
+@@ -307,6 +373,10 @@ static int tc358762_probe(struct mipi_dsi_device *dsi)
+ 	dsi->format = MIPI_DSI_FMT_RGB888;
+ 	dsi->lanes = 2;
+ 
++	if (ctx->radxa_rpi_mode) {
++		dsi->mode_flags |= MIPI_DSI_MODE_VIDEO_BURST | MIPI_DSI_MODE_NO_EOT_PACKET;
++	}
++
+ 	ret = mipi_dsi_attach(dsi);
+ 	if (ret < 0) {
+ 		dev_err(dev, "mipi_dsi_attach failed: %d\n", ret);

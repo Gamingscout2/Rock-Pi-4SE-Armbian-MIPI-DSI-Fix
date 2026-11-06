@@ -1,0 +1,118 @@
+OBSOLETE - DO NOT APPLY. Superseded by tc358762-rpi7-radxa-bringup.patch.
+The LCDC timing values below were wrong (they were not Radxa's working values).
+
+Experimental: Enhanced Radxa + Raspberry Pi 7" touchscreen initialization.
+With the boolean property toshiba,radxa-rpi7-init on the bridge node, make
+tc358762 use corrected LCDC timing values for the Powertip PH800480T013-IDF02
+panel (800x480 display on DFR0678). The timing values are derived from the
+panel datasheet and optimized for Radxa Rock Pi 4SE. Without the property the
+driver uses the default sequence unchanged.
+
+The key fix: corrected LCDC timing register values that were previously wrong
+for this specific panel (wrong H-sync, H-back-porch, H-front-porch, and
+V-front-porch values).
+
+Hard-coded for the Raspberry Pi 7" / DFR0678 panel on Radxa Rock 4SE.
+Applies to Linux 6.18.59/6.18.60.
+
+---
+diff --git a/drivers/gpu/drm/bridge/tc358762.c b/drivers/gpu/drm/bridge/tc358762.c
+index 98df3e6..a4aa2f5 100644
+--- a/drivers/gpu/drm/bridge/tc358762.c
++++ b/drivers/gpu/drm/bridge/tc358762.c
+@@ -53,6 +53,14 @@
+ #define LCDCTRL_VSPOL		BIT(19) /* Polarity of VSYNC signal */
+ #define LCDCTRL_VSDELAY(v)	(((v) & 0xfff) << 20) /* VSYNC delay */
+ 
++/* LCDC timing registers, as programmed by Radxa's working raspits-tc358762 driver */
++#define LCD_HSR_HBPR		0x0424
++#define LCD_HDISPR_HFPR		0x0428
++#define LCD_VSR_VBPR		0x042c
++#define LCD_VDISPR_VFPR		0x0430
++#define LCD_VFUEN		0x0434
++#define LCD_RDPKTLN		0x0410
++
+ /* SPI Master Registers */
+ #define SPICMR			0x0450
+ #define SPITCR			0x0454
+@@ -76,6 +84,7 @@ struct tc358762 {
+ 	struct gpio_desc *reset_gpio;
+ 	struct drm_display_mode mode;
+ 	bool pre_enabled;
++	bool radxa_rpi_mode;
+ 	int error;
+ };
+ 
+@@ -113,10 +122,44 @@ static inline struct tc358762 *bridge_to_tc358762(struct drm_bridge *bridge)
+ 	return container_of(bridge, struct tc358762, bridge);
+ }
+ 
++/*
++ * Experimental: Enhanced Radxa + Raspberry Pi 7" touchscreen initialization.
++ * This sequence is optimized for the Powertip PH800480T013-IDF02 panel
++ * with correct LCDC timing values derived from the panel datasheet.
++ */
++static int tc358762_init_rpi7_radxa(struct tc358762 *ctx)
++{
++	tc358762_write(ctx, DSI_LANEENABLE,
++		       LANEENABLE_L0EN | LANEENABLE_CLEN);
++	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D1S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D0S_ATMR, 0);
++	tc358762_write(ctx, PPI_D1S_ATMR, 0);
++	tc358762_write(ctx, PPI_LPTXTIMECNT, 0x15);
++	tc358762_write(ctx, SPICMR, 0x60);
++	tc358762_write(ctx, LCDCTRL, 0x00100152);
++	tc358762_write(ctx, LCD_HSR_HBPR, 0x002c0002);
++	tc358762_write(ctx, LCD_HDISPR_HFPR, 0x00360320);
++	tc358762_write(ctx, LCD_VSR_VBPR, 0x00160002);
++	tc358762_write(ctx, LCD_VDISPR_VFPR, 0x003101e0);
++	tc358762_write(ctx, LCD_VFUEN, 0x1);
++	tc358762_write(ctx, SYSCTRL, 0x040f);
++	tc358762_write(ctx, PPI_STARTPPI, PPI_START_FUNCTION);
++	tc358762_write(ctx, DSI_STARTDSI, DSI_RX_START);
++	tc358762_write(ctx, LCD_RDPKTLN, 0x3);
++
++	usleep_range(10, 20);
++
++	return tc358762_clear_error(ctx);
++}
++
+ static int tc358762_init(struct tc358762 *ctx)
+ {
+ 	u32 lcdctrl;
+ 
++	if (ctx->radxa_rpi_mode)
++		return tc358762_init_rpi7_radxa(ctx);
++
+ 	tc358762_write(ctx, DSI_LANEENABLE,
+ 		       LANEENABLE_L0EN | LANEENABLE_CLEN);
+ 	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 5);
+@@ -199,6 +242,9 @@ static void tc358762_enable(struct drm_bridge *bridge,
+ 	ret = tc358762_init(ctx);
+ 	if (ret < 0)
+ 		dev_err(ctx->dev, "error initializing bridge (%d)\n", ret);
++	else
++		dev_info(ctx->dev, "bridge initialized (%s sequence)\n",
++			 ctx->radxa_rpi_mode ? "Radxa RPi7" : "mainline");
+ }
+ 
+ static int tc358762_attach(struct drm_bridge *bridge,
+@@ -281,6 +327,17 @@ static int tc358762_probe(struct mipi_dsi_device *dsi)
+ 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+ 			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_VIDEO_HSE;
+ 
++	ctx->radxa_rpi_mode = of_property_read_bool(dev->of_node,
++						    "toshiba,radxa-rpi7-init");
++	if (ctx->radxa_rpi_mode) {
++		/* Radxa: burst mode, no EoT packets for better DSI link efficiency */
++		dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
++				  MIPI_DSI_MODE_VIDEO_BURST |
++				  MIPI_DSI_MODE_LPM |
++				  MIPI_DSI_MODE_NO_EOT_PACKET;
++		dev_info(dev, "using Radxa RPi 7\" touchscreen init sequence\n");
++	}
++
+ 	ret = tc358762_parse_dt(ctx);
+ 	if (ret < 0)
+ 		return ret;

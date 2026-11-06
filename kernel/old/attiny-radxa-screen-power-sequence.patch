@@ -1,0 +1,55 @@
+diff --git a/Documentation/devicetree/bindings/regulator/raspberrypi,7inch-touchscreen-panel-regulator.yaml b/Documentation/devicetree/bindings/regulator/raspberrypi,7inch-touchscreen-panel-regulator.yaml
+--- a/Documentation/devicetree/bindings/regulator/raspberrypi,7inch-touchscreen-panel-regulator.yaml
++++ b/Documentation/devicetree/bindings/regulator/raspberrypi,7inch-touchscreen-panel-regulator.yaml
+@@ -24,6 +24,12 @@ properties:
+   reg:
+     maxItems: 1
+ 
++  radxa,screen-power-sequence:
++    type: boolean
++    description: |
++      Enable the experimental Radxa DFR0678 screen power-up sequence.
++      Intended only for testing on compatible Radxa display hardware.
++
+ additionalProperties: false
+ 
+ required:
+diff --git a/drivers/regulator/rpi-panel-attiny-regulator.c b/drivers/regulator/rpi-panel-attiny-regulator.c
+--- a/drivers/regulator/rpi-panel-attiny-regulator.c
++++ b/drivers/regulator/rpi-panel-attiny-regulator.c
+@@ -16,2 +16,3 @@
+ #include <linux/mutex.h>
++#include <linux/property.h>
+ #include <linux/regmap.h>
+@@ -68,2 +69,3 @@ struct attiny_lcd {
+ 	struct regmap	*regmap;
++	bool radxa_screen_power_sequence;
+ 	bool gpio_states[NUM_GPIO];
+@@ -96,1 +98,2 @@ static int attiny_lcd_power_enable(struct regulator_dev *rdev)
+ 	struct attiny_lcd *state = rdev_get_drvdata(rdev);
++	int ret;
+@@ -118,2 +121,19 @@ static int attiny_lcd_power_enable(struct regulator_dev *rdev)
+ 	msleep(80);
+ 
++	if (!state->radxa_screen_power_sequence)
++		return 0;
++
++	ret = regmap_write(state->regmap, REG_POWERON, 0);
++	if (ret)
++		return ret;
++	msleep(800);
++
++	ret = regmap_write(state->regmap, REG_POWERON, 1);
++	if (ret)
++		return ret;
++	msleep(800);
++
++	ret = attiny_set_port_state(state, REG_PORTA, PA_LCD_LR);
++	if (ret)
++		return ret;
++
+@@ -294,1 +314,4 @@ static int attiny_i2c_probe(struct i2c_client *i2c)
+ 	i2c_set_clientdata(i2c, state);
++	state->radxa_screen_power_sequence =
++		device_property_read_bool(&i2c->dev,
++					  "radxa,screen-power-sequence");

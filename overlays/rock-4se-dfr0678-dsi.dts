@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * DFRobot DFR0678 7" 800x480 DSI display (Raspberry Pi 7" touchscreen
+ * compatible) on the Radxa ROCK 4SE / ROCK Pi 4, mainline kernel.
+ *
+ * - The board's 15-pin MIPI DSI connector is wired to the second DSI
+ *   controller (dsi@ff968000, TX1RX1 D-PHY), not dsi@ff960000.
+ * - The connector's I2C pins go to i2c1 (i2c@ff110000), which already
+ *   hosts the ES8316 audio codec at 0x11, so the bus must stay at 100 kHz.
+ * - The panel runs from the connector's 3.3 V pin and is switched on by
+ *   the ATTINY-compatible MCU at 0x45; there is no GPIO power switch.
+ *
+ * Driver: panel-raspberrypi-touchscreen (CONFIG_DRM_PANEL_RASPBERRYPI_TOUCHSCREEN).
+ *
+ * Legacy variant for kernels without the split drivers. On Armbian 6.18 it
+ * turns the backlight on and registers DSI-1, but every TC358762 register
+ * write fails with "failed to write command FIFO" and no image appears.
+ * Prefer rock-4se-dfr0678-dsi-bridge.dts. Both claim 0x45: load only one.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&mipi_dsi1 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_panel: endpoint {
+				remote-endpoint = <&panel_in_dsi1>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	lcd@45 {
+		compatible = "raspberrypi,7inch-touchscreen-panel";
+		reg = <0x45>;
+
+		port {
+			panel_in_dsi1: endpoint {
+				remote-endpoint = <&dsi1_out_panel>;
+			};
+		};
+	};
+};

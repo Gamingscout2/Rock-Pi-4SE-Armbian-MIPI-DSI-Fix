@@ -1,0 +1,2 @@
+File "linux-rockchip64-current.config" will go into armbian_build_folder/build/userpatches/
+The patches in the folder "patches" go into armbian_build_folder/build/userpatches/kernel/archive/rockchip64-6.18

@@ -1,0 +1,41 @@
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+--- a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+@@ -909,19 +909,37 @@
+ static void dw_mipi_dsi_dphy_enable(struct dw_mipi_dsi *dsi)
+ {
+ 	u32 val;
+ 	int ret;
+ 
++	DRM_DEV_INFO(dsi->dev,
++		     "PHY debug pre-enable: lanes=%u lane_mbps=%u "
++		     "clk_mgr=0x%08x if_cfg=0x%08x tmr_cfg=0x%08x "
++		     "tmr_lpclk=0x%08x rstz=0x%08x status=0x%08x\n",
++		     dsi->lanes, dsi->lane_mbps,
++		     dsi_read(dsi, DSI_CLKMGR_CFG),
++		     dsi_read(dsi, DSI_PHY_IF_CFG),
++		     dsi_read(dsi, DSI_PHY_TMR_CFG),
++		     dsi_read(dsi, DSI_PHY_TMR_LPCLK_CFG),
++		     dsi_read(dsi, DSI_PHY_RSTZ),
++		     dsi_read(dsi, DSI_PHY_STATUS));
++
+ 	dsi_write(dsi, DSI_PHY_RSTZ, PHY_ENFORCEPLL | PHY_ENABLECLK |
+ 		  PHY_UNRSTZ | PHY_UNSHUTDOWNZ);
+ 
+ 	ret = readl_poll_timeout(dsi->base + DSI_PHY_STATUS, val,
+ 				 val & PHY_LOCK, 1000, PHY_STATUS_TIMEOUT_US);
++	DRM_DEV_INFO(dsi->dev,
++		     "PHY debug lock-poll: ret=%d val=0x%08x status=0x%08x\n",
++		     ret, val, dsi_read(dsi, DSI_PHY_STATUS));
+ 	if (ret)
+ 		DRM_DEBUG_DRIVER("failed to wait phy lock state\n");
+ 
+ 	ret = readl_poll_timeout(dsi->base + DSI_PHY_STATUS,
+ 				 val, val & PHY_STOP_STATE_CLK_LANE, 1000,
+ 				 PHY_STATUS_TIMEOUT_US);
++	DRM_DEV_INFO(dsi->dev,
++		     "PHY debug stop-state-poll: ret=%d val=0x%08x status=0x%08x\n",
++		     ret, val, dsi_read(dsi, DSI_PHY_STATUS));
+ 	if (ret)
+ 		DRM_DEBUG_DRIVER("failed to wait phy clk lane stop state\n");
+ }

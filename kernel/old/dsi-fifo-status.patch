@@ -1,0 +1,48 @@
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+--- a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+@@ -405,4 +405,7 @@
+-static int dw_mipi_dsi_gen_pkt_hdr_write(struct dw_mipi_dsi *dsi, u32 hdr_val)
++static int dw_mipi_dsi_gen_pkt_hdr_write(struct dw_mipi_dsi *dsi, u32 hdr_val,
++					 size_t payload_len,
++					 u32 status_before_payload,
++					 u32 status_before_header)
+ {
+ 	int ret;
+ 	u32 val, mask;
+@@ -421,4 +424,16 @@
+ 	if (ret) {
+-		dev_err(dsi->dev, "failed to write command FIFO\n");
++		dev_err(dsi->dev,
++			"failed to write command FIFO: hdr=0x%08x dt=0x%02x "
++			"vc=%u payload=%zu status_before_payload=0x%08x "
++			"status_before_header=0x%08x status=0x%08x mask=0x%08x "
++			"mode=0x%08x vid=0x%08x lpclk=0x%08x pwr=0x%08x "
++			"phy=0x%08x\n",
++			hdr_val, hdr_val & 0x3f, (hdr_val >> 6) & 0x3,
++			payload_len, status_before_payload, status_before_header,
++			val, mask, dsi_read(dsi, DSI_MODE_CFG),
++			dsi_read(dsi, DSI_VID_MODE_CFG),
++			dsi_read(dsi, DSI_LPCLK_CTRL),
++			dsi_read(dsi, DSI_PWR_UP),
++			dsi_read(dsi, DSI_PHY_STATUS));
+ 		return ret;
+ 	}
+@@ -432,5 +444,6 @@
+ 	int len = packet->payload_length, pld_data_bytes = sizeof(u32), ret;
+ 	__le32 word;
+-	u32 val;
++	u32 val, status_before_payload, status_before_header;
+ 
++	status_before_payload = dsi_read(dsi, DSI_CMD_PKT_STATUS);
+ 	while (len) {
+@@ -462,4 +478,8 @@
+ 	word = 0;
+ 	memcpy(&word, packet->header, sizeof(packet->header));
+-	return dw_mipi_dsi_gen_pkt_hdr_write(dsi, le32_to_cpu(word));
++	status_before_header = dsi_read(dsi, DSI_CMD_PKT_STATUS);
++	return dw_mipi_dsi_gen_pkt_hdr_write(dsi, le32_to_cpu(word),
++					     packet->payload_length,
++					     status_before_payload,
++					     status_before_header);
+ }

@@ -1,0 +1,14 @@
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -117,1 +117,2 @@ dw_mipi_dsi_get_lane_mbps(void *priv_data, const struct drm_display_mode *mode,
+ 	unsigned int target_mbps = 1000;
++	u32 requested_lane_mbps;
+@@ -146,1 +147,7 @@
++	if (!of_property_read_u32(dsi->dev->of_node, "rockchip,lane-rate",
++				  &requested_lane_mbps)) {
++		target_mbps = requested_lane_mbps;
++		DRM_DEV_INFO(dsi->dev, "test lane rate override: %u Mbps/lane\n",
++			     target_mbps);
++	}
+ 	/* for external phy only a the mipi_dphy_config is necessary */

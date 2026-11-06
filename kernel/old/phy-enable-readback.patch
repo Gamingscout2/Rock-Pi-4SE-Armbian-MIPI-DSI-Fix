@@ -1,0 +1,10 @@
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+--- a/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-mipi-dsi.c
+@@ -949,1 +949,5 @@ static void dw_mipi_dsi_dphy_enable(struct dw_mipi_dsi *dsi)
++	DRM_DEV_INFO(dsi->dev,
++		     "PHY debug post-enable: rstz=0x%08x status=0x%08x\n",
++		     dsi_read(dsi, DSI_PHY_RSTZ),
++		     dsi_read(dsi, DSI_PHY_STATUS));
+ 	ret = readl_poll_timeout(dsi->base + DSI_PHY_STATUS, val,
+ 				 val & PHY_LOCK, 1000, PHY_STATUS_TIMEOUT_US);

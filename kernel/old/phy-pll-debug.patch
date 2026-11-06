@@ -1,0 +1,26 @@
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -373,7 +373,22 @@
+ static void dw_mipi_dsi_phy_write(struct dw_mipi_dsi_rockchip *dsi,
+ 				  u8 test_code,
+ 				  u8 test_data)
+ {
++	if (test_code == PLL_BIAS_CUR_SEL_CAP_VCO_CONTROL)
++		DRM_DEV_INFO(dsi->dev,
++			     "PHY-PLL-DIAG config: ref_present=%d "
++			     "ref_hz=%lu phy_cfg_present=%d phy_cfg_hz=%lu "
++			     "lane_mbps=%u input_div=%u feedback_div=%u\n",
++			     !!dsi->pllref_clk,
++			     dsi->pllref_clk ? clk_get_rate(dsi->pllref_clk) : 0,
++			     !!dsi->phy_cfg_clk,
++			     dsi->phy_cfg_clk ?
++			     clk_get_rate(dsi->phy_cfg_clk) : 0,
++			     dsi->lane_mbps, dsi->input_div, dsi->feedback_div);
++
++	DRM_DEV_INFO(dsi->dev,
++		     "PHY-PLL-DIAG test-write code=0x%02x data=0x%02x\n",
++		     (unsigned int)test_code, (unsigned int)test_data);
+ 	/*
+ 	 * With the falling edge on TESTCLK, the TESTDIN[7:0] signal content
+ 	 * is latched internally as the current test code. Test data is
