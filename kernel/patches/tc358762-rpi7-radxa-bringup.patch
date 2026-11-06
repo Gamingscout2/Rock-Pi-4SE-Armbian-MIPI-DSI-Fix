@@ -1,0 +1,407 @@
+drm/bridge: tc358762: Radxa-compatible bring-up for the RPi 7" (DFR0678) panel
+
+Experimental, hard-coded for the Raspberry Pi 7" / DFR0678 panel; not
+upstreamable. Replaces tc358762-radxa-init.patch and
+tc358762-rpi7-touchscreen-radxa.patch (do not apply either of those with this).
+
+With the boolean property toshiba,radxa-rpi7-init on the bridge node the
+driver reproduces what Radxa's working raspits-tc358762 + rockpi_mcu drivers
+do on the RK3399 BSP kernel:
+
+ - DSI mode: video burst, LPM, no EoT packets (DSI_PCKHDL_CFG 0x1c),
+   overridable with the Radxa-style "dsi,flags" property
+ - the exact register sequence and LCDC timing values Radxa sends
+   (toshiba,lcdc-timing overrides the four LCDC timing words)
+ - optional (toshiba,radxa-mcu = <&mcu>) ATTiny power-up exactly like
+   rockpi_mcu_screen_power_up(): POWERON=0, wait, POWERON=1, wait, PORTA=0x04,
+   done with raw I2C writes, followed by PWM=0xff once the bridge is set up
+ - toshiba,mcu-delay-ms (default 800) sets the two waits
+ - toshiba,init-in-pre-enable moves MCU power-up and register programming
+   from enable (DSI host already in video mode, like Radxa) to pre_enable
+   (DSI host in command mode)
+
+It also logs the ATTiny registers before and after the power-up and adds a
+write-only debugfs file, /sys/kernel/debug/tc358762/action:
+  1 reprogram bridge, 2 MCU power cycle, 3 MCU power cycle + reprogram,
+  4 log ATTiny registers, 5 backlight on, 6 backlight off
+
+Without the property the driver behaves like mainline.
+Applies to Linux 6.18.59/6.18.60.
+
+---
+diff --git a/drivers/gpu/drm/bridge/tc358762.c b/drivers/gpu/drm/bridge/tc358762.c
+index 98df3e6..a4aa2f5 100644
+--- a/drivers/gpu/drm/bridge/tc358762.c
++++ b/drivers/gpu/drm/bridge/tc358762.c
+@@ -10,10 +10,13 @@
+  *  Eric Anholt <eric@anholt.net>
+  */
+ 
++#include <linux/debugfs.h>
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/of_graph.h>
+ #include <linux/regulator/consumer.h>
+ 
+@@ -53,6 +56,22 @@
+ #define LCDCTRL_VSPOL		BIT(19) /* Polarity of VSYNC signal */
+ #define LCDCTRL_VSDELAY(v)	(((v) & 0xfff) << 20) /* VSYNC delay */
+ 
++/* LCDC timing registers, as programmed by Radxa's raspits-tc358762 driver */
++#define LCD_HSR_HBPR		0x0424
++#define LCD_HDISPR_HFPR		0x0428
++#define LCD_VSR_VBPR		0x042c
++#define LCD_VDISPR_VFPR		0x0430
++#define LCD_VFUEN		0x0434
++#define LCD_RDPKTLN		0x0410
++
++/* Registers of the ATTiny MCU (I2C address 0x45) on the Raspberry Pi 7" panel */
++#define MCU_REG_ID		0x80
++#define MCU_REG_PORTA		0x81
++#define MCU_REG_PORTB		0x82
++#define MCU_REG_PORTC		0x83
++#define MCU_REG_POWERON		0x85
++#define MCU_REG_PWM		0x86
++
+ /* SPI Master Registers */
+ #define SPICMR			0x0450
+ #define SPITCR			0x0454
+@@ -76,6 +95,13 @@
+ 	struct gpio_desc *reset_gpio;
+ 	struct drm_display_mode mode;
+ 	bool pre_enabled;
++	bool radxa_init;
++	bool init_in_pre_enable;
++	struct i2c_client *mcu;
++	u32 mcu_delay_ms;
++	u32 lcdc_timing[4];
++	struct mutex lock;
++	struct dentry *debugfs;
+ 	int error;
+ };
+ 
+@@ -113,10 +139,233 @@
+ 	return container_of(bridge, struct tc358762, bridge);
+ }
+ 
++static int tc358762_mcu_write(struct tc358762 *ctx, u8 reg, u8 val)
++{
++	u8 buf[2] = { reg, val };
++	int ret;
++
++	ret = i2c_master_send(ctx->mcu, buf, sizeof(buf));
++	/* Radxa's rockpi_mcu driver pauses after every command */
++	msleep(20);
++	if (ret < 0)
++		return ret;
++
++	return ret == sizeof(buf) ? 0 : -EIO;
++}
++
++/* The ATTiny cannot do repeated starts: write the register, then read it */
++static int tc358762_mcu_read(struct tc358762 *ctx, u8 reg)
++{
++	u8 val;
++	int ret;
++
++	ret = i2c_master_send(ctx->mcu, &reg, 1);
++	if (ret < 0)
++		return ret;
++
++	usleep_range(5000, 10000);
++
++	ret = i2c_master_recv(ctx->mcu, &val, 1);
++	if (ret < 0)
++		return ret;
++
++	return ret == 1 ? val : -EIO;
++}
++
++static void tc358762_mcu_dump(struct tc358762 *ctx, const char *when)
++{
++	dev_info(ctx->dev,
++		 "MCU %s: id=%#x porta=%#x portb=%#x portc=%#x poweron=%#x pwm=%#x\n",
++		 when,
++		 tc358762_mcu_read(ctx, MCU_REG_ID),
++		 tc358762_mcu_read(ctx, MCU_REG_PORTA),
++		 tc358762_mcu_read(ctx, MCU_REG_PORTB),
++		 tc358762_mcu_read(ctx, MCU_REG_PORTC),
++		 tc358762_mcu_read(ctx, MCU_REG_POWERON),
++		 tc358762_mcu_read(ctx, MCU_REG_PWM));
++}
++
++/* Same sequence as Radxa's rockpi_mcu_screen_power_up() */
++static int tc358762_mcu_power_up(struct tc358762 *ctx)
++{
++	int ret;
++
++	tc358762_mcu_dump(ctx, "before power-up");
++
++	ret = tc358762_mcu_write(ctx, MCU_REG_POWERON, 0x00);
++	if (ret < 0)
++		goto err;
++	msleep(ctx->mcu_delay_ms);
++
++	ret = tc358762_mcu_write(ctx, MCU_REG_POWERON, 0x01);
++	if (ret < 0)
++		goto err;
++	msleep(ctx->mcu_delay_ms);
++
++	ret = tc358762_mcu_write(ctx, MCU_REG_PORTA, 0x04);
++	if (ret < 0)
++		goto err;
++
++	tc358762_mcu_dump(ctx, "after power-up");
++	return 0;
++
++err:
++	dev_err(ctx->dev, "MCU power-up failed (%d)\n", ret);
++	return ret;
++}
++
++static void tc358762_mcu_backlight(struct tc358762 *ctx, u8 val)
++{
++	int ret = tc358762_mcu_write(ctx, MCU_REG_PWM, val);
++
++	if (ret < 0)
++		dev_err(ctx->dev, "MCU backlight write failed (%d)\n", ret);
++}
++
++/* Register sequence of Radxa's raspits-tc358762 driver, which works on RK3399 */
++static int tc358762_init_radxa(struct tc358762 *ctx)
++{
++	tc358762_write(ctx, DSI_LANEENABLE,
++		       LANEENABLE_L0EN | LANEENABLE_CLEN);
++	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D1S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D0S_ATMR, 0);
++	tc358762_write(ctx, PPI_D1S_ATMR, 0);
++	tc358762_write(ctx, PPI_LPTXTIMECNT, 0x15);
++	tc358762_write(ctx, SPICMR, 0x60);
++	tc358762_write(ctx, LCDCTRL, 0x00100152);
++	tc358762_write(ctx, LCD_HSR_HBPR, ctx->lcdc_timing[0]);
++	tc358762_write(ctx, LCD_HDISPR_HFPR, ctx->lcdc_timing[1]);
++	tc358762_write(ctx, LCD_VSR_VBPR, ctx->lcdc_timing[2]);
++	tc358762_write(ctx, LCD_VDISPR_VFPR, ctx->lcdc_timing[3]);
++	tc358762_write(ctx, LCD_VFUEN, 0x1);
++	tc358762_write(ctx, SYSCTRL, 0x040f);
++	tc358762_write(ctx, PPI_STARTPPI, PPI_START_FUNCTION);
++	tc358762_write(ctx, DSI_STARTDSI, DSI_RX_START);
++	tc358762_write(ctx, LCD_RDPKTLN, 0x3);
++
++	usleep_range(10, 20);
++
++	return tc358762_clear_error(ctx);
++}
++
++static void tc358762_put_mcu(void *data)
++{
++	struct i2c_client *mcu = data;
++
++	put_device(&mcu->dev);
++}
++
++/* Radxa-compatible bring-up, selected by toshiba,radxa-rpi7-init */
++static int tc358762_parse_radxa_dt(struct tc358762 *ctx,
++				   struct mipi_dsi_device *dsi)
++{
++	struct device_node *np = ctx->dev->of_node;
++	struct device_node *mcu_np;
++	u32 val;
++
++	/* Radxa's LCDC timing for this panel; an overlay can override it */
++	ctx->lcdc_timing[0] = 0x001a0014;
++	ctx->lcdc_timing[1] = 0x00690320;
++	ctx->lcdc_timing[2] = 0x00150002;
++	ctx->lcdc_timing[3] = 0x000701e0;
++	of_property_read_u32_array(np, "toshiba,lcdc-timing",
++				   ctx->lcdc_timing,
++				   ARRAY_SIZE(ctx->lcdc_timing));
++
++	/* Radxa: burst mode, no EoT packets (DSI_PCKHDL_CFG 0x1c) */
++	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
++			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET;
++	if (!of_property_read_u32(np, "dsi,flags", &val))
++		dsi->mode_flags = val;
++
++	ctx->init_in_pre_enable =
++		of_property_read_bool(np, "toshiba,init-in-pre-enable");
++
++	ctx->mcu_delay_ms = 800;
++	of_property_read_u32(np, "toshiba,mcu-delay-ms", &ctx->mcu_delay_ms);
++
++	mcu_np = of_parse_phandle(np, "toshiba,radxa-mcu", 0);
++	if (!mcu_np)
++		return 0;
++
++	ctx->mcu = of_find_i2c_device_by_node(mcu_np);
++	of_node_put(mcu_np);
++	if (!ctx->mcu)
++		return -EPROBE_DEFER;
++
++	return devm_add_action_or_reset(ctx->dev, tc358762_put_mcu, ctx->mcu);
++}
++
++static int tc358762_init(struct tc358762 *ctx);
++
++/*
++ * The MCU power-up resets the bridge, so it has to be followed by the
++ * register programming.
++ */
++static int tc358762_bring_up(struct tc358762 *ctx)
++{
++	int ret = 0;
++
++	mutex_lock(&ctx->lock);
++	if (ctx->mcu)
++		ret = tc358762_mcu_power_up(ctx);
++	if (!ret)
++		ret = tc358762_init(ctx);
++	mutex_unlock(&ctx->lock);
++
++	return ret;
++}
++
++/* Write-only debugfs knob to experiment without rebuilding the kernel */
++static int tc358762_debugfs_action(void *data, u64 val)
++{
++	struct tc358762 *ctx = data;
++	int ret = 0;
++
++	mutex_lock(&ctx->lock);
++	switch (val) {
++	case 1: /* reprogram the bridge registers */
++		ret = tc358762_init(ctx);
++		break;
++	case 2: /* MCU power cycle only */
++		ret = ctx->mcu ? tc358762_mcu_power_up(ctx) : -ENODEV;
++		break;
++	case 3: /* MCU power cycle, then reprogram the bridge */
++		ret = ctx->mcu ? tc358762_mcu_power_up(ctx) : -ENODEV;
++		if (!ret)
++			ret = tc358762_init(ctx);
++		break;
++	case 4: /* log the MCU registers */
++		if (ctx->mcu)
++			tc358762_mcu_dump(ctx, "debugfs");
++		else
++			ret = -ENODEV;
++		break;
++	case 5: /* backlight on */
++	case 6: /* backlight off */
++		if (ctx->mcu)
++			tc358762_mcu_backlight(ctx, val == 5 ? 0xff : 0x00);
++		else
++			ret = -ENODEV;
++		break;
++	default:
++		ret = -EINVAL;
++	}
++	mutex_unlock(&ctx->lock);
++
++	return ret;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(tc358762_action_fops, NULL,
++			 tc358762_debugfs_action, "%llu\n");
++
+ static int tc358762_init(struct tc358762 *ctx)
+ {
+ 	u32 lcdctrl;
+ 
++	if (ctx->radxa_init)
++		return tc358762_init_radxa(ctx);
++
+ 	tc358762_write(ctx, DSI_LANEENABLE,
+ 		       LANEENABLE_L0EN | LANEENABLE_CLEN);
+ 	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 5);
+@@ -164,6 +413,9 @@
+ 
+ 	ctx->pre_enabled = false;
+ 
++	if (ctx->mcu)
++		tc358762_mcu_backlight(ctx, 0x00);
++
+ 	if (ctx->reset_gpio)
+ 		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+ 
+@@ -188,6 +440,12 @@
+ 	}
+ 
+ 	ctx->pre_enabled = true;
++
++	if (ctx->init_in_pre_enable) {
++		ret = tc358762_bring_up(ctx);
++		if (ret < 0)
++			dev_err(ctx->dev, "error initializing bridge (%d)\n", ret);
++	}
+ }
+ 
+ static void tc358762_enable(struct drm_bridge *bridge,
+@@ -195,9 +453,16 @@
+ {
+ 	struct tc358762 *ctx = bridge_to_tc358762(bridge);
+-	int ret;
++	int ret = 0;
+ 
+-	ret = tc358762_init(ctx);
++	if (!ctx->init_in_pre_enable)
++		ret = tc358762_bring_up(ctx);
+ 	if (ret < 0)
+ 		dev_err(ctx->dev, "error initializing bridge (%d)\n", ret);
++	else
++		dev_info(ctx->dev, "bridge initialized (%s sequence)\n",
++			 ctx->radxa_init ? "Radxa" : "mainline");
++
++	if (ctx->mcu)
++		tc358762_mcu_backlight(ctx, 0xff);
+ }
+ 
+@@ -281,6 +546,22 @@
+ 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+ 			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_VIDEO_HSE;
+ 
++	ret = devm_mutex_init(dev, &ctx->lock);
++	if (ret)
++		return ret;
++
++	ctx->radxa_init = of_property_read_bool(dev->of_node,
++						"toshiba,radxa-rpi7-init");
++	if (ctx->radxa_init) {
++		ret = tc358762_parse_radxa_dt(ctx, dsi);
++		if (ret < 0)
++			return ret;
++
++		dev_info(dev, "using Radxa RPi 7\" init (mcu: %s, bridge init in %s)\n",
++			 ctx->mcu ? "yes" : "no",
++			 ctx->init_in_pre_enable ? "pre_enable" : "enable");
++	}
++
+ 	ret = tc358762_parse_dt(ctx);
+ 	if (ret < 0)
+ 		return ret;
+@@ -299,8 +580,13 @@
+ 	if (ret < 0) {
+ 		drm_bridge_remove(&ctx->bridge);
+ 		dev_err(dev, "failed to attach dsi\n");
++		return ret;
+ 	}
+ 
++	ctx->debugfs = debugfs_create_dir("tc358762", NULL);
++	debugfs_create_file_unsafe("action", 0200, ctx->debugfs, ctx,
++				   &tc358762_action_fops);
++
+ 	return ret;
+ }
+ 
+@@ -309,6 +595,7 @@
+ 	struct tc358762 *ctx = mipi_dsi_get_drvdata(dsi);
+ 
+ 	mipi_dsi_detach(dsi);
++	debugfs_remove_recursive(ctx->debugfs);
+ 	drm_bridge_remove(&ctx->bridge);
+ }
+ 

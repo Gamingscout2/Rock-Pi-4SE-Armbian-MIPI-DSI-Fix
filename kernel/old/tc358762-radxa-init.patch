@@ -1,0 +1,109 @@
+Experimental: with the boolean property toshiba,radxa-init on the bridge
+node, make tc358762 behave like Radxa's working raspits-tc358762 driver:
+burst mode without EoT packets, and Radxa's register values, including
+fixed 800x480 DPI output timing. Without the property the driver is
+unchanged. Either way, log a line when the bridge initializes.
+
+Hard-coded for the Raspberry Pi 7" / DFR0678 panel; not upstreamable.
+Applies to Linux 6.18.59/6.18.60.
+
+---
+diff --git a/drivers/gpu/drm/bridge/tc358762.c b/drivers/gpu/drm/bridge/tc358762.c
+index 98df3e6..a4aa2f5 100644
+--- a/drivers/gpu/drm/bridge/tc358762.c
++++ b/drivers/gpu/drm/bridge/tc358762.c
+@@ -53,6 +53,14 @@
+ #define LCDCTRL_VSPOL		BIT(19) /* Polarity of VSYNC signal */
+ #define LCDCTRL_VSDELAY(v)	(((v) & 0xfff) << 20) /* VSYNC delay */
+ 
++/* LCDC timing registers, as programmed by Radxa's raspits-tc358762 driver */
++#define LCD_HSR_HBPR		0x0424
++#define LCD_HDISPR_HFPR		0x0428
++#define LCD_VSR_VBPR		0x042c
++#define LCD_VDISPR_VFPR		0x0430
++#define LCD_VFUEN		0x0434
++#define LCD_RDPKTLN		0x0410
++
+ /* SPI Master Registers */
+ #define SPICMR			0x0450
+ #define SPITCR			0x0454
+@@ -76,6 +84,7 @@ struct tc358762 {
+ 	struct gpio_desc *reset_gpio;
+ 	struct drm_display_mode mode;
+ 	bool pre_enabled;
++	bool radxa_init;
+ 	int error;
+ };
+ 
+@@ -113,10 +122,43 @@ static inline struct tc358762 *bridge_to_tc358762(struct drm_bridge *bridge)
+ 	return container_of(bridge, struct tc358762, bridge);
+ }
+ 
++/*
++ * Experimental: the register sequence Radxa's working raspits-tc358762 driver
++ * sends for the 7" panel, including fixed DPI output timing for 800x480.
++ */
++static int tc358762_init_radxa(struct tc358762 *ctx)
++{
++	tc358762_write(ctx, DSI_LANEENABLE,
++		       LANEENABLE_L0EN | LANEENABLE_CLEN);
++	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D1S_CLRSIPOCOUNT, 0x0c);
++	tc358762_write(ctx, PPI_D0S_ATMR, 0);
++	tc358762_write(ctx, PPI_D1S_ATMR, 0);
++	tc358762_write(ctx, PPI_LPTXTIMECNT, 0x15);
++	tc358762_write(ctx, SPICMR, 0x60);
++	tc358762_write(ctx, LCDCTRL, 0x00100152);
++	tc358762_write(ctx, LCD_HSR_HBPR, 0x001a0014);
++	tc358762_write(ctx, LCD_HDISPR_HFPR, 0x00690320);
++	tc358762_write(ctx, LCD_VSR_VBPR, 0x00150002);
++	tc358762_write(ctx, LCD_VDISPR_VFPR, 0x000701e0);
++	tc358762_write(ctx, LCD_VFUEN, 0x1);
++	tc358762_write(ctx, SYSCTRL, 0x040f);
++	tc358762_write(ctx, PPI_STARTPPI, PPI_START_FUNCTION);
++	tc358762_write(ctx, DSI_STARTDSI, DSI_RX_START);
++	tc358762_write(ctx, LCD_RDPKTLN, 0x3);
++
++	usleep_range(10, 20);
++
++	return tc358762_clear_error(ctx);
++}
++
+ static int tc358762_init(struct tc358762 *ctx)
+ {
+ 	u32 lcdctrl;
+ 
++	if (ctx->radxa_init)
++		return tc358762_init_radxa(ctx);
++
+ 	tc358762_write(ctx, DSI_LANEENABLE,
+ 		       LANEENABLE_L0EN | LANEENABLE_CLEN);
+ 	tc358762_write(ctx, PPI_D0S_CLRSIPOCOUNT, 5);
+@@ -199,6 +241,9 @@ static void tc358762_enable(struct drm_bridge *bridge,
+ 	ret = tc358762_init(ctx);
+ 	if (ret < 0)
+ 		dev_err(ctx->dev, "error initializing bridge (%d)\n", ret);
++	else
++		dev_info(ctx->dev, "bridge initialized (%s sequence)\n",
++			 ctx->radxa_init ? "Radxa" : "mainline");
+ }
+ 
+ static int tc358762_attach(struct drm_bridge *bridge,
+@@ -281,6 +326,17 @@ static int tc358762_probe(struct mipi_dsi_device *dsi)
+ 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
+ 			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_VIDEO_HSE;
+ 
++	ctx->radxa_init = of_property_read_bool(dev->of_node,
++						"toshiba,radxa-init");
++	if (ctx->radxa_init) {
++		/* Radxa: burst mode, no EoT packets (DSI_PCKHDL_CFG 0x1c) */
++		dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
++				  MIPI_DSI_MODE_VIDEO_BURST |
++				  MIPI_DSI_MODE_LPM |
++				  MIPI_DSI_MODE_NO_EOT_PACKET;
++		dev_info(dev, "using Radxa init sequence and burst mode\n");
++	}
++
+ 	ret = tc358762_parse_dt(ctx);
+ 	if (ret < 0)
+ 		return ret;

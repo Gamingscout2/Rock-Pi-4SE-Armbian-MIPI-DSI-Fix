@@ -1,0 +1,13 @@
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -148,3 +148,3 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
+ 	dw_mipi_dsi_phy_write(dsi, HS_TX_CLOCK_LANE_REQUEST_STATE_TIME_CONTROL,
+-			      TLP_PROGRAM_EN | ns2bc(dsi, 500));
++			      TLP_PROGRAM_EN | ns2bc(dsi, 60));
+ 	dw_mipi_dsi_phy_write(dsi, HS_TX_CLOCK_LANE_PREPARE_STATE_TIME_CONTROL,
+@@ -161,3 +161,3 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
+ 	dw_mipi_dsi_phy_write(dsi, HS_TX_DATA_LANE_REQUEST_STATE_TIME_CONTROL,
+-			      TLP_PROGRAM_EN | ns2bc(dsi, 500));
++			      TLP_PROGRAM_EN | ns2bc(dsi, 60));
+ 	dw_mipi_dsi_phy_write(dsi, HS_TX_DATA_LANE_PREPARE_STATE_TIME_CONTROL,

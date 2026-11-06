@@ -1,0 +1,284 @@
+On RK3399, keep DSI0's display host disabled but initialize its D-PHY PLL
+when DSI1 has the experimental rockchip,dsi-dsi0 phandle. DSI1 continues
+to own the display pipeline; DSI0 only supplies the TX0 PHY clock.
+
+Based on Linux 6.18.59 source commit 1253a6aa5d104312bf0992afacc15220ae35bdf9.
+
+---
+ drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c | 226 +++++++++++++++++++++++
+ 1 file changed, 226 insertions(+)
+
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -9,14 +9,18 @@
+ #include <linux/clk.h>
++#include <linux/device.h>
+ #include <linux/hw_bitfield.h>
+ #include <linux/iopoll.h>
+ #include <linux/math64.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/of_device.h>
+ #include <linux/of_platform.h>
+ #include <linux/phy/phy.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/reset.h>
+ #include <linux/regmap.h>
+ 
+ #include <video/mipi_display.h>
+@@ -273,6 +277,13 @@ struct dw_mipi_dsi_rockchip {
+ 	/* dual-channel */
+ 	bool is_slave;
+ 	struct dw_mipi_dsi_rockchip *slave;
+ 
++	/* Optional RK3399 DSI0 PHY used as the DSI1 PLL source. */
++	void __iomem *dsi0_base;
++	struct clk *dsi0_pclk;
++	struct clk *dsi0_pllref_clk;
++	struct clk *dsi0_phy_cfg_clk;
++	struct reset_control *dsi0_apb_reset;
++	bool dsi0_phy_active;
+ 	/* optional external dphy */
+ 	struct phy *phy;
+@@ -299,1 +310,103 @@
++static void dw_mipi_dsi_clk_put_action(void *data)
++{
++	clk_put(data);
++}
++
++static void dw_mipi_dsi_reset_put_action(void *data)
++{
++	reset_control_put(data);
++}
++
++static int dw_mipi_dsi_get_dsi0_clock(struct dw_mipi_dsi_rockchip *dsi,
++				      struct device_node *np,
++				      const char *name,
++				      struct clk **clock)
++{
++	struct clk *clk;
++	int ret;
++
++	clk = of_clk_get_by_name(np, name);
++	if (IS_ERR(clk)) {
++		ret = PTR_ERR(clk);
++		DRM_DEV_ERROR(dsi->dev, "Unable to get DSI0 %s clock: %d\n",
++			      name, ret);
++		return ret;
++	}
++
++	ret = devm_add_action_or_reset(dsi->dev, dw_mipi_dsi_clk_put_action,
++				       clk);
++	if (ret)
++		return ret;
++
++	*clock = clk;
++
++	return 0;
++}
++
++static int dw_mipi_dsi_get_dsi0_resources(struct dw_mipi_dsi_rockchip *dsi)
++{
++	struct device_node *np;
++	struct reset_control *reset;
++	int ret;
++
++	if (!of_find_property(dsi->dev->of_node, "rockchip,dsi-dsi0", NULL))
++		return 0;
++
++	np = of_parse_phandle(dsi->dev->of_node, "rockchip,dsi-dsi0", 0);
++	if (!np) {
++		DRM_DEV_ERROR(dsi->dev, "Invalid rockchip,dsi-dsi0 phandle\n");
++		return -EINVAL;
++	}
++
++	dsi->dsi0_base = devm_of_iomap(dsi->dev, np, 0, NULL);
++	if (IS_ERR(dsi->dsi0_base)) {
++		ret = PTR_ERR(dsi->dsi0_base);
++		dsi->dsi0_base = NULL;
++		DRM_DEV_ERROR(dsi->dev, "Unable to map DSI0 registers: %d\n",
++			      ret);
++		goto out_put_node;
++	}
++	if (!dsi->dsi0_base) {
++		ret = -ENOMEM;
++		DRM_DEV_ERROR(dsi->dev, "Unable to map DSI0 registers\n");
++		goto out_put_node;
++	}
++
++	ret = dw_mipi_dsi_get_dsi0_clock(dsi, np, "pclk", &dsi->dsi0_pclk);
++	if (ret)
++		goto out_put_node;
++
++	ret = dw_mipi_dsi_get_dsi0_clock(dsi, np, "ref",
++					 &dsi->dsi0_pllref_clk);
++	if (ret)
++		goto out_put_node;
++
++	ret = dw_mipi_dsi_get_dsi0_clock(dsi, np, "phy_cfg",
++					 &dsi->dsi0_phy_cfg_clk);
++	if (ret)
++		goto out_put_node;
++
++	reset = of_reset_control_get_exclusive(np, "apb");
++	if (IS_ERR(reset)) {
++		ret = PTR_ERR(reset);
++		DRM_DEV_ERROR(dsi->dev, "Unable to get DSI0 APB reset: %d\n",
++			      ret);
++		goto out_put_node;
++	}
++
++	ret = devm_add_action_or_reset(dsi->dev,
++				       dw_mipi_dsi_reset_put_action, reset);
++	if (ret)
++		goto out_put_node;
++
++	dsi->dsi0_apb_reset = reset;
++	of_node_put(np);
++
++	return 0;
++
++out_put_node:
++	of_node_put(np);
++	return ret;
++}
++
+ static struct dw_mipi_dsi_rockchip *to_dsi(struct drm_encoder *encoder)
+@@ -407,4 +520,6 @@ static inline unsigned int ns2ui(struct dw_mipi_dsi_rockchip *dsi, int ns)
+ 	return DIV_ROUND_UP(ns * dsi->lane_mbps, 1000);
+ }
+ 
++static int dw_mipi_dsi_dsi0_phy_power_on(struct dw_mipi_dsi_rockchip *dsi);
++
+ static int dw_mipi_dsi_phy_init(void *priv_data)
+@@ -521,4 +636,6 @@ static int dw_mipi_dsi_phy_init(void *priv_data)
+ 	clk_disable_unprepare(dsi->phy_cfg_clk);
+ 
++	if (dsi->dsi0_base)
++		ret = dw_mipi_dsi_dsi0_phy_power_on(dsi);
+ 	return ret;
+ }
+@@ -526,1 +643,105 @@
++static int dw_mipi_dsi_dsi0_phy_power_on(struct dw_mipi_dsi_rockchip *dsi)
++{
++	struct dw_mipi_dsi_rockchip dsi0 = {
++		.dev = dsi->dev,
++		.base = dsi->dsi0_base,
++		.pllref_clk = dsi->dsi0_pllref_clk,
++		.phy_cfg_clk = dsi->dsi0_phy_cfg_clk,
++		.lane_mbps = dsi->lane_mbps,
++		.input_div = dsi->input_div,
++		.feedback_div = dsi->feedback_div,
++	};
++	u32 val;
++	int ret, reset_ret;
++
++	if (dsi->dsi0_phy_active)
++		return 0;
++
++	ret = clk_prepare_enable(dsi->dsi0_pclk);
++	if (ret) {
++		DRM_DEV_ERROR(dsi->dev, "Failed to enable DSI0 pclk: %d\n", ret);
++		return ret;
++	}
++
++	ret = clk_prepare_enable(dsi->dsi0_pllref_clk);
++	if (ret) {
++		DRM_DEV_ERROR(dsi->dev, "Failed to enable DSI0 ref clock: %d\n",
++			      ret);
++		goto err_pclk;
++	}
++
++	ret = reset_control_assert(dsi->dsi0_apb_reset);
++	if (ret) {
++		DRM_DEV_ERROR(dsi->dev, "Failed to assert DSI0 APB reset: %d\n",
++			      ret);
++		goto err_ref_clk;
++	}
++
++	usleep_range(10, 20);
++	ret = reset_control_deassert(dsi->dsi0_apb_reset);
++	if (ret) {
++		DRM_DEV_ERROR(dsi->dev, "Failed to deassert DSI0 APB reset: %d\n",
++			      ret);
++		goto err_reassert_reset;
++	}
++
++	usleep_range(10, 20);
++	dsi_write(&dsi0, DSI_PHY_RSTZ, PHY_RSTZ);
++	dsi_write(&dsi0, DSI_PHY_TST_CTRL0, PHY_TESTCLK | PHY_TESTCLR);
++	usleep_range(100, 150);
++	dsi_write(&dsi0, DSI_PHY_TST_CTRL0, PHY_TESTCLK | PHY_UNTESTCLR);
++
++	ret = dw_mipi_dsi_phy_init(&dsi0);
++	if (ret)
++		goto err_assert_reset;
++
++	dsi_write(&dsi0, DSI_PHY_RSTZ, PHY_ENFORCEPLL | PHY_ENABLECLK |
++		  PHY_UNRSTZ | PHY_UNSHUTDOWNZ);
++	dsi->dsi0_phy_active = true;
++
++	ret = readl_poll_timeout(dsi0.base + DSI_PHY_STATUS, val,
++				 val & LOCK, 1000, PHY_STATUS_TIMEOUT_US);
++	DRM_DEV_INFO(dsi->dev,
++		     "DSI0 PHY lock-poll: ret=%d status=0x%08x\n",
++		     ret, readl(dsi0.base + DSI_PHY_STATUS));
++	if (ret)
++		DRM_DEV_ERROR(dsi->dev, "DSI0 PHY did not lock: %d\n", ret);
++
++	/* Keep DSI0 powered so DSI1's response can be measured independently. */
++	return 0;
++
++err_assert_reset:
++	dsi_write(&dsi0, DSI_PHY_RSTZ, PHY_RSTZ);
++err_reassert_reset:
++	reset_ret = reset_control_assert(dsi->dsi0_apb_reset);
++	if (reset_ret)
++		DRM_DEV_ERROR(dsi->dev,
++			      "Failed to re-assert DSI0 APB reset: %d\n",
++			      reset_ret);
++err_ref_clk:
++	clk_disable_unprepare(dsi->dsi0_pllref_clk);
++err_pclk:
++	clk_disable_unprepare(dsi->dsi0_pclk);
++
++	return ret;
++}
++
++static void dw_mipi_dsi_dsi0_phy_power_off(struct dw_mipi_dsi_rockchip *dsi)
++{
++	int ret;
++
++	if (!dsi->dsi0_phy_active)
++		return;
++
++	writel(PHY_RSTZ, dsi->dsi0_base + DSI_PHY_RSTZ);
++	ret = reset_control_assert(dsi->dsi0_apb_reset);
++	if (ret)
++		DRM_DEV_ERROR(dsi->dev, "Failed to assert DSI0 APB reset: %d\n",
++			      ret);
++
++	clk_disable_unprepare(dsi->dsi0_pllref_clk);
++	clk_disable_unprepare(dsi->dsi0_pclk);
++	dsi->dsi0_phy_active = false;
++}
++
+ static void dw_mipi_dsi_phy_power_on(void *priv_data)
+@@ -541,4 +761,5 @@ static void dw_mipi_dsi_phy_power_off(void *priv_data)
+ 	struct dw_mipi_dsi_rockchip *dsi = priv_data;
+ 
+ 	phy_power_off(dsi->phy);
++	dw_mipi_dsi_dsi0_phy_power_off(dsi);
+ }
+@@ -1442,2 +1663,6 @@ static int dw_mipi_dsi_rockchip_probe(struct platform_device *pdev)
+ 	dsi->dev = dev;
++	ret = dw_mipi_dsi_get_dsi0_resources(dsi);
++	if (ret)
++		return ret;
++
+ 	dsi->pdata.base = dsi->base;
+-- 

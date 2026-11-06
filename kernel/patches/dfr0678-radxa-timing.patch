@@ -1,0 +1,33 @@
+Test the Powertip DFR0678 panel timing captured from the working Radxa
+ROCK 4SE while retaining the existing panel-simple descriptor and bus flags.
+
+Based on Linux 6.18.59 source commit
+1253a6aa5d104312bf0992afacc15220ae35bdf9.
+
+---
+ drivers/gpu/drm/panel/panel-simple.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-simple.c b/drivers/gpu/drm/panel/panel-simple.c
+--- a/drivers/gpu/drm/panel/panel-simple.c
++++ b/drivers/gpu/drm/panel/panel-simple.c
+@@ -3985,12 +3985,12 @@
+ static const struct drm_display_mode powertip_ph800480t013_idf02_mode = {
+-	.clock = 24750,
++	.clock = 26000,
+ 	.hdisplay = 800,
+-	.hsync_start = 800 + 54,
+-	.hsync_end = 800 + 54 + 2,
+-	.htotal = 800 + 54 + 2 + 44,
++	.hsync_start = 800 + 1,
++	.hsync_end = 800 + 1 + 5,
++	.htotal = 800 + 1 + 5 + 40,
+ 	.vdisplay = 480,
+-	.vsync_start = 480 + 49,
+-	.vsync_end = 480 + 49 + 2,
+-	.vtotal = 480 + 49 + 2 + 22,
++	.vsync_start = 480 + 7,
++	.vsync_end = 480 + 7 + 1,
++	.vtotal = 480 + 7 + 1 + 21,
+ 	.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
+ };

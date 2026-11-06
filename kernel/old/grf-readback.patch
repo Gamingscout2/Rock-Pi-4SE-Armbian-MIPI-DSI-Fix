@@ -1,0 +1,47 @@
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -410,1 +410,24 @@
++static void dw_mipi_dsi_grf_readback(struct dw_mipi_dsi_rockchip *dsi,
++				     const char *stage, const char *name,
++				     u32 reg)
++{
++	u32 value;
++	int ret;
++
++	if (!reg)
++		return;
++
++	ret = regmap_read(dsi->grf_regmap, reg, &value);
++	if (ret) {
++		DRM_DEV_ERROR(dsi->dev,
++			      "DSI-GRF-READBACK %s %s reg=0x%04x ret=%d\n",
++			      stage, name, reg, ret);
++		return;
++	}
++
++	DRM_DEV_INFO(dsi->dev,
++		     "DSI-GRF-READBACK %s %s reg=0x%04x value=0x%08x\n",
++		     stage, name, reg, value);
++}
++
+ static int dw_mipi_dsi_phy_init(void *priv_data)
+@@ -446,1 +469,8 @@
++	dw_mipi_dsi_grf_readback(dsi, "before-phy-init", "lanecfg1",
++				 dsi->cdata->lanecfg1_grf_reg);
++	dw_mipi_dsi_grf_readback(dsi, "before-phy-init", "lanecfg2",
++				 dsi->cdata->lanecfg2_grf_reg);
++	dw_mipi_dsi_grf_readback(dsi, "before-phy-init", "enable",
++				 dsi->cdata->enable_grf_reg);
++
+ 	dw_mipi_dsi_phy_write(dsi, PLL_BIAS_CUR_SEL_CAP_VCO_CONTROL,
+@@ -748,2 +778,9 @@
+ 					      dsi->cdata->enable);
++
++	dw_mipi_dsi_grf_readback(dsi, "after-config", "lanecfg1",
++				 dsi->cdata->lanecfg1_grf_reg);
++	dw_mipi_dsi_grf_readback(dsi, "after-config", "lanecfg2",
++				 dsi->cdata->lanecfg2_grf_reg);
++	dw_mipi_dsi_grf_readback(dsi, "after-config", "enable",
++				 dsi->cdata->enable_grf_reg);
+ }

@@ -1,0 +1,42 @@
+Experimental: let DSI1 use a fixed lane rate from the device tree
+(rockchip,lane-rate, in Mbps), as Radxa's kernel does (696 for the
+DFR0678). The TC358762 appears to derive its DPI pixel clock from the DSI
+byte clock, so the lane rate sets the panel's real pixel clock.
+
+Replaces rate-override.patch, whose first hunk only applied with fuzz
+outside the function. Applies to Linux 6.18.59/6.18.60 with or without
+rk3399-dsi1-dsi0-pll.patch.
+
+---
+diff --git a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+index f2ab0d3..7ba66ce 100644
+--- a/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw-mipi-dsi-rockchip.c
+@@ -783,6 +783,7 @@ dw_mipi_dsi_get_lane_mbps(void *priv_data, const struct drm_display_mode *mode,
+ 	unsigned int _prediv, best_prediv;
+ 	unsigned long _fbdiv, best_fbdiv;
+ 	unsigned long min_delta = ULONG_MAX;
++	u32 value;
+ 
+ 	dsi->format = format;
+ 	bpp = mipi_dsi_pixel_format_to_bpp(dsi->format);
+@@ -804,6 +805,19 @@ dw_mipi_dsi_get_lane_mbps(void *priv_data, const struct drm_display_mode *mode,
+ 				      "DPHY clock frequency is out of range\n");
+ 	}
+ 
++	/* Experimental: fixed lane rate, as Radxa's kernel allows. */
++	if (!of_property_read_u32(dsi->dev->of_node, "rockchip,lane-rate",
++				  &value)) {
++		if (value && value < max_mbps)
++			target_mbps = value;
++		else
++			DRM_DEV_ERROR(dsi->dev,
++				      "rockchip,lane-rate %u out of range\n",
++				      value);
++		DRM_DEV_INFO(dsi->dev, "lane rate override: %u Mbps/lane\n",
++			     target_mbps);
++	}
++
+ 	/* for external phy only a the mipi_dphy_config is necessary */
+ 	if (dsi->phy) {
+ 		phy_mipi_dphy_get_default_config(mode->clock * 1000 * 10 / 8,

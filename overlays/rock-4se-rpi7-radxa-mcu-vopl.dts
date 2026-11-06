@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Raspberry Pi 7" / DFR0678 touchscreen on the Radxa ROCK 4SE, Radxa-style,
+ * variant: DSI1 fed by the little VOP (VOPL), like Radxa's kernel.
+ *
+ * Identical to rock-4se-rpi7-radxa-mcu, plus the big VOP (VOPB) is disabled.
+ * The stock Armbian graph links DSI1 to both VOPs and the DRM core picks the
+ * first one it binds (VOPB, GRF SOC_CON20 = 0x249); endpoint "status" is not
+ * honoured by mainline DRM, so the "mipi1_in_vopb disabled" of the other
+ * overlays never took effect. Radxa's kernel runs DSI1 from VOPL
+ * (SOC_CON20 = 0x259). With VOPB disabled the only possible CRTC is VOPL.
+ *
+ * Side effect: HDMI can then only use VOPL, so do not use HDMI at the same
+ * time as this overlay. Revert by installing another variant.
+ *
+ * Needs the kernel patches rk3399-dsi1-dsi0-pll, dsi-lane-rate-override,
+ * dfr0678-radxa-timing and tc358762-rpi7-radxa-bringup, and no other overlay
+ * touching I2C1 address 0x45.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	rpi7_mcu: mcu@45 {
+		compatible = "rockpi_mcu";
+		reg = <0x45>;
+	};
+};
+
+&vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopl {
+	status = "okay";
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* DSI0 supplies the shared PHY PLL while staying disabled */
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+	rockchip,lane-rate = <696>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+
+		toshiba,radxa-rpi7-init;
+		toshiba,radxa-mcu = <&rpi7_mcu>;
+		toshiba,debug-readback;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};

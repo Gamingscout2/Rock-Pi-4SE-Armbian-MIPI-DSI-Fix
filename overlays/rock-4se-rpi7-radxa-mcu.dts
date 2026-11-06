@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Raspberry Pi 7" / DFR0678 touchscreen on the Radxa ROCK 4SE, Radxa-style.
+ *
+ * Reproduces what Radxa's working "rock-4-raspi-7inch-touchscreen" overlay and
+ * raspits-tc358762 + rockpi_mcu drivers do, using the in-tree tc358762 bridge:
+ *  - the ATTiny MCU (0x45) has no kernel driver (like Radxa's passive
+ *    "rockpi_mcu" node); the bridge driver power-cycles it with raw I2C
+ *    writes right before it programs the bridge, in bridge enable (the DSI
+ *    host is already in video mode, exactly like the Radxa BSP)
+ *  - Radxa's register sequence, LCDC timing and DSI flags (burst, no EoT)
+ *
+ * Needs the kernel patches rk3399-dsi1-dsi0-pll, dsi-lane-rate-override,
+ * dfr0678-radxa-timing and tc358762-rpi7-radxa-bringup, and no other overlay
+ * touching I2C1 address 0x45.
+ *
+ * Optional bridge properties (all consumed by tc358762-rpi7-radxa-bringup):
+ *   toshiba,mcu-delay-ms = <800>;                  waits around MCU power-up
+ *   toshiba,lcdc-timing = <hsr_hbpr hdispr_hfpr vsr_vbpr vdispr_vfpr>;
+ *   dsi,flags = <0xa03>;                           MIPI_DSI_MODE_* mask
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	rpi7_mcu: mcu@45 {
+		compatible = "rockpi_mcu";
+		reg = <0x45>;
+	};
+};
+
+/* Route DSI1 through VOPL, like Radxa */
+&mipi1_in_vopb {
+	status = "disabled";
+};
+
+&mipi1_in_vopl {
+	status = "okay";
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* DSI0 supplies the shared PHY PLL while staying disabled */
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+	rockchip,lane-rate = <696>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+
+		toshiba,radxa-rpi7-init;
+		toshiba,radxa-mcu = <&rpi7_mcu>;
+		toshiba,debug-readback;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};

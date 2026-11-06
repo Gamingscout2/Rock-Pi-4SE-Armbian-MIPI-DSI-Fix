@@ -1,0 +1,92 @@
+rockchip/vop: optional DSI output overrides for the Radxa/Rockchip BSP behaviour
+
+The Radxa BSP drives the same RPi 7" / DFR0678 panel (TC358762 bridge) from
+the RK3399 VOP correctly, mainline v6.18 produces black pixels. Session 17/18
+(tests/0004 register diff, tests/0005 live register experiments) found that
+setting SYS_CTRL (VOP+0x08) bit 17 makes the console appear on the panel.
+Radxa sets that bit for every DSI output ("data01_swap", a field that exists
+only in the BSP: VOP_REG_VER(RK3288_SYS_CTRL, 0x1, 17, 3, 5, -1)). Mainline
+has no field for it and also hardcodes mipi_dclk_pol = 1, while the BSP
+derives it from the bus flags (0 here, DSP_CTRL1 bit 31).
+
+Live results on the ROCK 4SE (DSI1 on VOPL):
+  - SYS_CTRL bit 17 set, DSP_CTRL1 = 0x1000e400 (dclk_pol 0, mipi_pin_pol 1):
+    sharp, correctly coloured text console (session 18, step A5-1)
+  - SYS_CTRL bit 17 set, DSP_CTRL1 = 0x0000e400 (dclk_pol 0, mipi_pin_pol 0):
+    console visible (step B5)
+  - additionally setting DSP_CTRL1 bits 0/1/6 (the BSP's lut/dither bits):
+    washed out white background, poor picture. Not applied here.
+
+Nothing changes unless it is asked for. The overrides can be given on the VOP
+node in the device tree (what the overlays use) or as module parameters
+(rockchipdrm.vop_dsi_*, which win when >= 0):
+
+  rockchip,dsi-data01-swap;          boolean, sets SYS_CTRL bit 17
+  rockchip,dsi-dclk-pol = <0|1>;     mipi_dclk_pol (mainline: 1)
+  rockchip,dsi-pin-pol = <0..7>;     mipi_pin_pol (mainline: from the mode)
+
+Applies to Linux 6.18.59/6.18.60. Only DSI outputs are touched.
+
+---
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop.c
+@@ -1362,6 +1362,48 @@ static void vop_crtc_atomic_begin(struct drm_crtc *crtc,
+ 		vop_crtc_gamma_set(vop, crtc, old_crtc_state);
+ }
+ 
++static int vop_dsi_dclk_pol = -1;
++module_param(vop_dsi_dclk_pol, int, 0644);
++MODULE_PARM_DESC(vop_dsi_dclk_pol, "VOP DSI dclk polarity (DSP_CTRL1 bit31): -1 = DT/mainline default, 0/1 = force");
++
++static int vop_dsi_pin_pol = -1;
++module_param(vop_dsi_pin_pol, int, 0644);
++MODULE_PARM_DESC(vop_dsi_pin_pol, "VOP DSI mipi_pin_pol (DSP_CTRL1 bits 28-30): -1 = DT/mainline default, 0-7 = force");
++
++static int vop_dsi_data01_swap = -1;
++module_param(vop_dsi_data01_swap, int, 0644);
++MODULE_PARM_DESC(vop_dsi_data01_swap, "VOP SYS_CTRL bit17 (data01 swap, set by the Radxa BSP): -1 = DT/leave, 0/1 = force");
++
++static void vop_dsi_bsp_parity(struct vop *vop)
++{
++	struct device_node *np = vop->dev->of_node;
++	int dclk_pol = vop_dsi_dclk_pol;
++	int pin_pol = vop_dsi_pin_pol;
++	int swap = vop_dsi_data01_swap;
++	u32 val;
++
++	if (dclk_pol < 0 && !of_property_read_u32(np, "rockchip,dsi-dclk-pol", &val))
++		dclk_pol = !!val;
++	if (pin_pol < 0 && !of_property_read_u32(np, "rockchip,dsi-pin-pol", &val))
++		pin_pol = val & 0x7;
++	if (swap < 0 && of_property_read_bool(np, "rockchip,dsi-data01-swap"))
++		swap = 1;
++
++	if (dclk_pol >= 0)
++		VOP_REG_SET(vop, output, mipi_dclk_pol, dclk_pol);
++	if (pin_pol >= 0)
++		VOP_REG_SET(vop, output, mipi_pin_pol, pin_pol);
++	if (swap >= 0) {
++		val = readl(vop->regs + 0x08);
++		val = swap ? val | BIT(17) : val & ~BIT(17);
++		writel(val, vop->regs + 0x08);
++		vop->regsbak[0x08 >> 2] = val;
++	}
++
++	dev_info(vop->dev, "DSI output: SYS_CTRL=%#x DSP_CTRL1=%#x\n",
++		 readl(vop->regs + 0x08), readl(vop->regs + 0x14));
++}
++
+ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
+ 				   struct drm_atomic_state *state)
+ {
+@@ -1481,6 +1523,9 @@ static void vop_crtc_atomic_enable(struct drm_crtc *crtc,
+ 	}
+ 
+ 	VOP_REG_SET(vop, common, out_mode, s->output_mode);
++
++	if (s->output_type == DRM_MODE_CONNECTOR_DSI)
++		vop_dsi_bsp_parity(vop);
+ 
+ 	VOP_REG_SET(vop, modeset, htotal_pw, (htotal << 16) | hsync_len);
+ 	val = hact_st << 16;

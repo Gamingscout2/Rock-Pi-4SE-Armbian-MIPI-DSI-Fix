@@ -1,0 +1,161 @@
+drm/bridge: tc358762: read back bridge registers over DSI (debug)
+
+Experimental, applies on top of tc358762-rpi7-radxa-bringup.patch.
+
+Adds visibility into the TC358762 itself, which so far could only be written:
+
+ - tc358762_read(): DSI generic read of a 32-bit bridge register (the
+   bridge is programmed with RDPKTLN=3, as Radxa does, so it answers reads)
+ - toshiba,debug-readback: after the bring-up in bridge enable, log the
+   identity and status registers (IDREG, SYSSTAT, PPI/DSI busy, lane status,
+   DSI interrupt status and error counter, application layer status, the
+   LCDC timing words, SYSCTRL), then again one second later
+ - debugfs /sys/kernel/debug/tc358762/action:
+     7                         log the same registers now
+     0x000100000000<addr:4>     read one register, e.g. 0x00010000000004a0
+     0x0002<addr:4><data:8>     write one register, e.g. 0x0002043400000001
+
+If the first read fails the dump stops and logs the error, which by itself
+shows that the bridge does not answer over the DSI back channel.
+
+---
+diff --git a/drivers/gpu/drm/bridge/tc358762.c b/drivers/gpu/drm/bridge/tc358762.c
+index a4aa2f5..b1c9d4e 100644
+--- a/drivers/gpu/drm/bridge/tc358762.c
++++ b/drivers/gpu/drm/bridge/tc358762.c
+@@ -97,6 +97,7 @@
+ 	bool pre_enabled;
+ 	bool radxa_init;
+ 	bool init_in_pre_enable;
++	bool debug_readback;
+ 	struct i2c_client *mcu;
+ 	u32 mcu_delay_ms;
+ 	u32 lcdc_timing[4];
+@@ -249,6 +250,92 @@
+ 	return tc358762_clear_error(ctx);
+ }
+ 
++static int tc358762_read(struct tc358762 *ctx, u16 addr, u32 *val)
++{
++	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
++	__le16 req = cpu_to_le16(addr);
++	__le32 rsp = 0;
++	ssize_t ret;
++
++	ret = mipi_dsi_generic_read(dsi, &req, sizeof(req), &rsp, sizeof(rsp));
++	if (ret < 0)
++		return ret;
++	if (ret != sizeof(rsp))
++		return -EIO;
++
++	*val = le32_to_cpu(rsp);
++	return 0;
++}
++
++/* Read back the bridge's identity and status registers over DSI */
++static void tc358762_dump_regs(struct tc358762 *ctx, const char *when)
++{
++	static const struct {
++		u16 addr;
++		const char *name;
++	} regs[] = {
++		{ 0x04a0, "IDREG" },
++		{ 0x0460, "SYSSTAT" },
++		{ 0x0108, "PPI_BUSYPPI" },
++		{ 0x0208, "DSI_BUSYDSI" },
++		{ 0x0210, "DSI_LANEENABLE" },
++		{ 0x0214, "DSI_LANESTATUS0" },
++		{ 0x0218, "DSI_LANESTATUS1" },
++		{ 0x0220, "DSI_INTSTATUS" },
++		{ 0x0300, "DSIERRCNT" },
++		{ 0x0404, "APLSTAT" },
++		{ 0x0408, "APLERR" },
++		{ 0x0420, "LCDCTRL" },
++		{ 0x0424, "LCD_HSR_HBPR" },
++		{ 0x0428, "LCD_HDISPR_HFPR" },
++		{ 0x042c, "LCD_VSR_VBPR" },
++		{ 0x0430, "LCD_VDISPR_VFPR" },
++		{ 0x0464, "SYSCTRL" },
++	};
++	u32 val;
++	int i, ret;
++
++	for (i = 0; i < ARRAY_SIZE(regs); i++) {
++		ret = tc358762_read(ctx, regs[i].addr, &val);
++		if (ret < 0) {
++			dev_info(ctx->dev, "%s: read of %s (%#06x) failed (%d)\n",
++				 when, regs[i].name, regs[i].addr, ret);
++			return;
++		}
++
++		dev_info(ctx->dev, "%s: %s (%#06x) = %#010x\n",
++			 when, regs[i].name, regs[i].addr, val);
++	}
++}
++
++/*
++ * debugfs: 0x1<addr> reads and 0x2<addr><data> writes a bridge register, with
++ * the opcode in bits 48+, e.g. 0x00010000000004a0 or 0x0002043400000001
++ */
++static int tc358762_debugfs_reg(struct tc358762 *ctx, u64 val)
++{
++	u32 data;
++	int ret;
++
++	switch (val >> 48) {
++	case 1:
++		ret = tc358762_read(ctx, val & 0xffff, &data);
++		if (ret < 0) {
++			dev_info(ctx->dev, "read of %#06x failed (%d)\n",
++				 (u32)(val & 0xffff), ret);
++			return ret;
++		}
++		dev_info(ctx->dev, "reg %#06x = %#010x\n",
++			 (u32)(val & 0xffff), data);
++		return 0;
++	case 2:
++		tc358762_write(ctx, (val >> 32) & 0xffff, val & 0xffffffff);
++		return tc358762_clear_error(ctx);
++	default:
++		return -EINVAL;
++	}
++}
++
+ static void tc358762_put_mcu(void *data)
+ {
+ 	struct i2c_client *mcu = data;
+@@ -282,6 +369,9 @@
+ 	ctx->init_in_pre_enable =
+ 		of_property_read_bool(np, "toshiba,init-in-pre-enable");
+ 
++	ctx->debug_readback =
++		of_property_read_bool(np, "toshiba,debug-readback");
++
+ 	ctx->mcu_delay_ms = 800;
+ 	of_property_read_u32(np, "toshiba,mcu-delay-ms", &ctx->mcu_delay_ms);
+ 
+@@ -312,6 +402,11 @@
+ 		ret = tc358762_mcu_power_up(ctx);
+ 	if (!ret)
+ 		ret = tc358762_init(ctx);
++	if (!ret && ctx->debug_readback) {
++		tc358762_dump_regs(ctx, "after init");
++		msleep(1000);
++		tc358762_dump_regs(ctx, "1 s later");
++	}
+ 	mutex_unlock(&ctx->lock);
+ 
+ 	return ret;
+@@ -349,8 +444,11 @@
+ 		else
+ 			ret = -ENODEV;
+ 		break;
++	case 7: /* read back bridge registers over DSI */
++		tc358762_dump_regs(ctx, "debugfs");
++		break;
+ 	default:
+-		ret = -EINVAL;
++		ret = tc358762_debugfs_reg(ctx, val);
+ 	}
+ 	mutex_unlock(&ctx->lock);
+ 

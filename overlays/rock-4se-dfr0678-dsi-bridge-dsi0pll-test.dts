@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * DFRobot DFR0678 7" 800x480 DSI display (Raspberry Pi 7" touchscreen
+ * compatible) on the Radxa ROCK 4SE / ROCK Pi 4, mainline kernel, using the
+ * split drivers that replaced panel-raspberrypi-touchscreen:
+ *
+ *   ATTINY power/backlight MCU (i2c1 @ 0x45)
+ *     -> TC358762 DSI-to-DPI bridge (DSI1, virtual channel 0)
+ *       -> panel-simple "powertip,ph800480t013-idf02"
+ *
+ * Modelled on mainline's imx8mm-venice-gw73xx-0x-rpidsi.dtso.
+ *
+ * - The board's 15-pin MIPI DSI connector is wired to the second DSI
+ *   controller (dsi@ff968000, TX1RX1 D-PHY), not dsi@ff960000.
+ * - The connector's I2C pins go to i2c1 (i2c@ff110000), which already
+ *   hosts the ES8316 audio codec at 0x11, so the bus must stay at 100 kHz.
+ * - The TC358762 is a DSI peripheral: it is configured over DSI, so it sits
+ *   under the DSI host, not on i2c1. Only the MCU is on i2c1.
+ * - The MCU at 0x45 switches the panel and bridge power and drives the
+ *   backlight; there is no GPIO power switch on the board.
+ *
+ * Kernel: CONFIG_REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY,
+ *         CONFIG_DRM_TOSHIBA_TC358762, CONFIG_DRM_PANEL_SIMPLE.
+ * Do not load together with rock-4se-dfr0678-dsi.dtbo: both claim 0x45.
+ * This test overlay adds a DSI0 phandle consumed only by the experimental
+ * kernel patch; the DSI0 display host remains disabled.
+ */
+
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	panel {
+		compatible = "powertip,ph800480t013-idf02";
+		power-supply = <&dfr0678_mcu>;
+		backlight = <&dfr0678_mcu>;
+
+		port {
+			panel_in_bridge: endpoint {
+				remote-endpoint = <&bridge_out_panel>;
+			};
+		};
+	};
+};
+
+&i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	dfr0678_mcu: regulator@45 {
+		compatible = "raspberrypi,7inch-touchscreen-panel-regulator";
+		reg = <0x45>;
+	};
+};
+
+&mipi_dsi1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	rockchip,dsi-dsi0 = <&mipi_dsi>;
+
+	bridge@0 {
+		compatible = "toshiba,tc358762";
+		reg = <0>;
+		vddc-supply = <&dfr0678_mcu>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				bridge_in_dsi1: endpoint {
+					remote-endpoint = <&dsi1_out_bridge>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				bridge_out_panel: endpoint {
+					remote-endpoint = <&panel_in_bridge>;
+				};
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			dsi1_out_bridge: endpoint {
+				remote-endpoint = <&bridge_in_dsi1>;
+			};
+		};
+	};
+};
