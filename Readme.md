@@ -62,3 +62,7 @@ sudo ./touch-orientation.sh 270
 - [`touch-orientation.sh`](touch-orientation.sh): change touch rotation and restart its service.
 - [`tests/`](tests/): board-side DSI, bridge, and VOP diagnostic tests. Also helpful in debugging
 - [`tools/validate.sh`](tools/validate.sh): compile and check the device-tree overlays on a Linux host.
+
+## AI Use Disclosure
+
+AI tools assisted with debugging and source-code comparison during the development of this repository. The tools used were Cursor and Claude Sonnet 5.5.
