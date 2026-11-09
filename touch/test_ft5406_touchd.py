@@ -259,19 +259,12 @@ class UInputTest(unittest.TestCase):
 class RunLoopTest(unittest.TestCase):
     """Drives run() through a controller power cycle with faked hardware."""
 
-    def test_releases_on_power_loss_and_recovers(self):
+    def drive(self, script):
+        """Runs run() against a scripted register file and returns the emitted events."""
         class Done(Exception):
             pass
 
-        script = [
-            (0, b""),                       # first frame: idle, clears the stale filter
-            (1, point(0, 0, 100, 100)),     # finger down
-            OSError(121, "Remote I/O error"),  # panel turned off, chip unpowered
-            (1, point(2, 0, 100, 100)),     # power back: stale frame, ignored
-            (1, point(2, 0, 100, 100)),
-            (0, b""),                       # idle
-            (1, point(0, 0, 300, 200)),     # new touch
-        ]
+        script = list(script)
 
         class FakeDev:
             path = "/dev/i2c-fake"
@@ -314,12 +307,42 @@ class RunLoopTest(unittest.TestCase):
             with self.assertRaises(Done):
                 t.run(args)
 
-        tracking = [v for (_, c, v) in [e for e in emitted if e != "closed"]
-                    if c == t.ABS_MT_TRACKING_ID]
-        touches = [v for e in emitted if e != "closed" for (_, c, v) in [e] if c == t.BTN_TOUCH]
+        return emitted
+
+    @staticmethod
+    def summarize(emitted):
+        events = [e for e in emitted if e != "closed"]
+        tracking = [v for (_, c, v) in events if c == t.ABS_MT_TRACKING_ID]
+        touches = [v for (_, c, v) in events if c == t.BTN_TOUCH]
+        return tracking, touches
+
+    def test_releases_on_power_loss_and_recovers(self):
+        power_loss = [OSError(121, "Remote I/O error")] * t.READ_RETRIES
+        emitted = self.drive([
+            (0, b""),                       # first frame: idle, clears the stale filter
+            (1, point(0, 0, 100, 100)),     # finger down
+            *power_loss,                    # panel turned off, chip unpowered
+            (1, point(2, 0, 100, 100)),     # power back: stale frame, ignored
+            (1, point(2, 0, 100, 100)),
+            (0, b""),                       # idle
+            (1, point(0, 0, 300, 200)),     # new touch
+        ])
+        tracking, touches = self.summarize(emitted)
         self.assertEqual(tracking, [0, -1, 1, -1])
         self.assertEqual(touches, [1, 0, 1, 0])
         self.assertEqual(emitted[-1], "closed")
+
+    def test_transient_read_error_keeps_the_touch(self):
+        emitted = self.drive([
+            (0, b""),
+            (1, point(0, 0, 100, 100)),     # finger down
+            OSError(121, "Remote I/O error"),  # one NACK, retried
+            (1, point(2, 0, 100, 100)),     # still down: same contact, no release
+            (0, b""),                       # lifted
+        ])
+        tracking, touches = self.summarize(emitted)
+        self.assertEqual(tracking, [0, -1])
+        self.assertEqual(touches, [1, 0])
 
 
 if __name__ == "__main__":
