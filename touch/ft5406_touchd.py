@@ -61,6 +61,12 @@ REG_FIRST_POINT = 0x03
 POINT_LEN = 6
 EVENT_UP, EVENT_RESERVED = 1, 3
 
+# A polled controller with no IRQ line occasionally NACKs a read while it is busy
+# scanning. That is not a power loss, so a failed read is retried a few times before
+# the controller is treated as gone (which drops every contact and re-arms the stale filter).
+READ_RETRIES = 3
+READ_RETRY_DELAY = 0.003
+
 
 class _SmbusData(ctypes.Union):
     _fields_ = [("byte", ctypes.c_uint8), ("word", ctypes.c_uint16),
@@ -270,6 +276,16 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def read_frame_with_retry(chip):
+    for attempt in range(READ_RETRIES):
+        try:
+            return chip.read_frame()
+        except OSError:
+            if attempt == READ_RETRIES - 1:
+                raise
+            time.sleep(READ_RETRY_DELAY)
+
+
 def run(args):
     bus = args.bus if args.bus is not None else find_bus(args.adapter)
     dev = I2CDevice(bus, args.address)
@@ -291,7 +307,7 @@ def run(args):
     try:
         while not stop:
             try:
-                frame = chip.read_frame()
+                frame = read_frame_with_retry(chip)
                 if online is not True:
                     log("touch controller is responding")
                     online = True
