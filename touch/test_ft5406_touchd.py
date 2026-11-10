@@ -137,6 +137,10 @@ class CommandLineTest(unittest.TestCase):
         self.assertFalse(args.invert_x)
         self.assertFalse(args.invert_y)
 
+    def test_probe_flag(self):
+        self.assertFalse(t.parse_args([]).probe)
+        self.assertTrue(t.parse_args(["--probe"]).probe)
+
     def test_rotate_180_inverts_both_axes(self):
         args = t.parse_args(["--rotate-180"])
         self.assertTrue(args.invert_x and args.invert_y)
