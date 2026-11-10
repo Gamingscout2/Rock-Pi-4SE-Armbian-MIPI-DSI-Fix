@@ -61,6 +61,12 @@ REG_FIRST_POINT = 0x03
 POINT_LEN = 6
 EVENT_UP, EVENT_RESERVED = 1, 3
 
+# A polled controller with no IRQ line occasionally NACKs a read while it is busy
+# scanning. That is not a power loss, so a failed read is retried a few times before
+# the controller is treated as gone (which drops every contact and re-arms the stale filter).
+READ_RETRIES = 3
+READ_RETRY_DELAY = 0.003
+
 
 class _SmbusData(ctypes.Union):
     _fields_ = [("byte", ctypes.c_uint8), ("word", ctypes.c_uint16),
@@ -270,6 +276,16 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def read_frame_with_retry(chip):
+    for attempt in range(READ_RETRIES):
+        try:
+            return chip.read_frame()
+        except OSError:
+            if attempt == READ_RETRIES - 1:
+                raise
+            time.sleep(READ_RETRY_DELAY)
+
+
 def run(args):
     bus = args.bus if args.bus is not None else find_bus(args.adapter)
     dev = I2CDevice(bus, args.address)
@@ -291,7 +307,7 @@ def run(args):
     try:
         while not stop:
             try:
-                frame = chip.read_frame()
+                frame = read_frame_with_retry(chip)
                 if online is not True:
                     log("touch controller is responding")
                     online = True
@@ -322,6 +338,43 @@ def run(args):
         dev.close()
 
 
+def probe(args):
+    """Prints raw contact coordinates and the range seen so far.
+
+    Run it with the touch service stopped, then touch all four corners and the
+    middle of each edge: the min/max shown is the controller's real range, which
+    is what --width/--height must match.
+    """
+    bus = args.bus if args.bus is not None else find_bus(args.adapter)
+    dev = I2CDevice(bus, args.address)
+    chip = FT5x06(dev, args.max_points)
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+    low, high = [None, None], [None, None]
+    log("probing %s addr 0x%02x, touch the panel, Ctrl+C to stop" % (dev.path, args.address))
+    try:
+        while not stop:
+            try:
+                frame = read_frame_with_retry(chip)
+            except OSError as e:
+                log("touch controller not responding (%s); retrying" % e.strerror)
+                chip.rearm()
+                time.sleep(0.5)
+                continue
+            for event, touch_id, x, y in frame or []:
+                if event in (EVENT_UP, EVENT_RESERVED):
+                    continue
+                for i, v in enumerate((x, y)):
+                    low[i] = v if low[i] is None else min(low[i], v)
+                    high[i] = v if high[i] is None else max(high[i], v)
+                print("id=%d raw x=%4d y=%4d   seen x %d..%d  y %d..%d"
+                      % (touch_id, x, y, low[0], high[0], low[1], high[1]), flush=True)
+            time.sleep(args.interval / 1000.0)
+    finally:
+        dev.close()
+
+
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--adapter", default="ff110000.i2c",
@@ -345,6 +398,9 @@ def build_parser():
     p.add_argument("--max-points", type=int, default=10, choices=range(1, 11), metavar="1-10")
     p.add_argument("--interval", type=int, default=17, help="poll period in ms (default 17, ~60 Hz)")
     p.add_argument("--name", default="FT5406 touchscreen (polled)")
+    p.add_argument("--probe", action="store_true",
+                   help="print raw touch coordinates and their min/max instead of creating "
+                        "an input device (stop the service first)")
     return p
 
 
@@ -360,7 +416,11 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    run(parse_args(argv))
+    args = parse_args(argv)
+    if args.probe:
+        probe(args)
+    else:
+        run(args)
 
 
 if __name__ == "__main__":
