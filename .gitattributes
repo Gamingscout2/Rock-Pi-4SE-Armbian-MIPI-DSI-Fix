@@ -1,0 +1,4 @@
+# Everything here runs on Linux (the Armbian build and the board), so text files keep LF
+# line endings even in Windows checkouts with core.autocrlf=true. bash cannot source a
+# config file or run a script that has CRLF line endings.
+* text=auto eol=lf

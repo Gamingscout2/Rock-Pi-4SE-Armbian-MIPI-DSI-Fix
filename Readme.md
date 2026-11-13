@@ -23,7 +23,7 @@ The working `v9` configuration depends on these kernel changes:
 - `tc358762-rpi7-radxa-bringup`: initialize the bridge and ATTiny as required by this panel.
 - `rockchip-vop-bsp-parity`: add the VOP `data01_swap` setting needed for the DSI image.
 
-These patch files are in [`kernel/patches/`](kernel/patches/). Use [`kernel/linux-rockchip64-current.config`](kernel/linux-rockchip64-current.config) as the kernel configuration reference and follow [`kernel/patch_dir.md`](kernel/patch_dir.md) for where the Armbian build tree expects the files. The kernel must include `CONFIG_DRM_TOSHIBA_TC358762`, `CONFIG_REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY`, and `CONFIG_DRM_PANEL_SIMPLE`. The bridge readback patch is optional and only adds diagnostics.
+These patch files are in [`userpatches/kernel/archive/rockchip64-6.18/`](userpatches/kernel/archive/rockchip64-6.18/), and the kernel configuration is [`userpatches/linux-rockchip64-current.config`](userpatches/linux-rockchip64-current.config); see [Building](#building). The kernel must include `CONFIG_DRM_TOSHIBA_TC358762`, `CONFIG_REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY`, and `CONFIG_DRM_PANEL_SIMPLE`. The bridge readback patch is optional and only adds diagnostics.
 
 The `v9` overlay, [`overlays/rock-4se-rpi7-radxa-vopl-fix.dts`](overlays/rock-4se-rpi7-radxa-vopl-fix.dts), connects DSI1 through the bridge, uses VOPL, and enables `rockchip,dsi-data01-swap`. VOPL is then unavailable to HDMI while this overlay is active.
 
@@ -31,9 +31,51 @@ The `v9` overlay, [`overlays/rock-4se-rpi7-radxa-vopl-fix.dts`](overlays/rock-4s
 
 Please see https://docs.armbian.com/build-framework/getting-started/ for more information on building armbian images
 
+[`userpatches/`](userpatches/) has the layout the Armbian build framework expects. Copy its contents into the `userpatches/` folder of the Armbian build checkout:
+
+```bash
+cp -r userpatches/. ~/build/userpatches/
+```
+
+- `linux-rockchip64-current.config`: kernel configuration for `BRANCH=current` (Linux 6.18).
+- `kernel/archive/rockchip64-6.18/`: the kernel patches. Armbian applies them together with its own patches for that kernel.
+- `config-enable_v9.conf` and `extensions/rock-4se-dsi-v9.sh`: the optional `enable_v9` build described below.
+- `overlay/rock-4se-dsi/`: a copy of `install.sh`, the `v9` overlay and the touch service, which the `enable_v9` build installs into the image.
+
+`general-rtc-pcf8563-pass-driver-data-to-irq-handler.patch` is intentionally empty. An empty user patch makes Armbian skip its own patch of the same name; that patch is already part of Linux 6.18.63, and applying it again stops the build. Framework versions that no longer ship the patch just skip the empty file.
+
+`./compile.sh` builds the patched kernel and image without enabling any overlay; install it on the board as described under [Install](#install).
+
+### Enabling the v9 overlay at build time
+
+```bash
+./compile.sh enable_v9
+```
+
+This builds the same kernel and image, and also runs `install.sh --variant v9` inside the image. A freshly flashed image then boots with the console on the DSI panel, without running `install.sh`:
+
+- `rock-4se-rpi7-radxa-vopl-fix.dtbo` is in `/boot/overlay-user/` and listed in `user_overlays=` in `/boot/armbianEnv.txt`.
+- The FT5406 touch service is installed and enabled, with no touch rotation.
+- The panel runs in landscape.
+- HDMI shows nothing, because `v9` disables VOPB and gives VOPL to the panel.
+
+`enable_v9` only accepts `BOARD=rock-4se` and a kernel branch that has patches in `userpatches/kernel/archive/` (`BRANCH=current`); otherwise the build stops during configuration. If `install.sh` fails inside the image, the build stops too.
+
+Check the result on the board:
+
+```bash
+grep user_overlays /boot/armbianEnv.txt
+ls /boot/overlay-user/
+systemctl is-enabled ft5406-touchd
+```
+
+Running `install.sh --variant v9` again on the board is safe; it does not duplicate the `user_overlays` entry. To switch back to HDMI, run `sudo ./install.sh --uninstall` from a copy of this repository on the board and reboot, or remove `rock-4se-rpi7-radxa-vopl-fix` from `user_overlays=` in `/boot/armbianEnv.txt` and reboot.
+
+When `install.sh`, the `v9` overlay or the touch service change, copy them to `userpatches/overlay/rock-4se-dsi/` as well; [`tools/validate.sh`](tools/validate.sh) reports any difference.
+
 ## Install
 
-After booting the ROCK 4SE with the required kernel:
+After booting the ROCK 4SE with the required kernel (an `enable_v9` image already has this done):
 
 ```bash
 sudo ./install.sh --variant v9
@@ -61,7 +103,8 @@ sudo ./touch-orientation.sh 270
 - [`diagnose.sh`](diagnose.sh): report live device-tree, kernel, overlay, and display configuration. Useful for debugging.
 - [`touch-orientation.sh`](touch-orientation.sh): change touch rotation and restart its service.
 - [`tests/`](tests/): board-side DSI, bridge, and VOP diagnostic tests. Also helpful in debugging
-- [`tools/validate.sh`](tools/validate.sh): compile and check the device-tree overlays on a Linux host.
+- [`tools/validate.sh`](tools/validate.sh): compile and check the device-tree overlays on a Linux host, and check that `userpatches/overlay/rock-4se-dsi/` is up to date.
+- [`userpatches/`](userpatches/): kernel patches, kernel configuration and the `enable_v9` build option, laid out for the Armbian build framework.
 
 ## AI Use Disclosure
 

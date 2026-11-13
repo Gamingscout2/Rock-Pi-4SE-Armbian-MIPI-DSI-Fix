@@ -1,0 +1,15 @@
+[Unit]
+Description=Polling touchscreen driver for the DFR0678 FT5406 (no IRQ line)
+After=systemd-modules-load.service
+StartLimitIntervalSec=0
+
+[Service]
+Environment=FT5406_TOUCHD_ARGS=
+EnvironmentFile=-/etc/default/ft5406-touchd
+ExecStartPre=-/sbin/modprobe uinput
+ExecStart=/usr/bin/python3 /usr/local/sbin/ft5406-touchd $FT5406_TOUCHD_ARGS
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

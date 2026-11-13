@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the mainline ROCK 4SE base DTB, apply each overlay with fdtoverlay and
 # check the resulting DSI graph. Runs on any Linux host; no board needed.
+# Also checks that userpatches/overlay/rock-4se-dsi/ matches the files it copies.
 #
 #   tools/validate.sh [path-to-linux-source]
 #
@@ -190,6 +191,17 @@ points /panel power-supply $mcu
 points /panel backlight $mcu
 link $dsi1/ports/port@1/endpoint $bridge/ports/port@0/endpoint
 link $bridge/ports/port@1/endpoint /panel/port/endpoint
+
+echo
+echo ">> userpatches/overlay/rock-4se-dsi: the copy that ./compile.sh enable_v9 installs"
+for f in install.sh overlays/rock-4se-rpi7-radxa-vopl-fix.dts touch/ft5406_touchd.py touch/ft5406-touchd.service; do
+	if diff -q --strip-trailing-cr "$repo_root/$f" "$repo_root/userpatches/overlay/rock-4se-dsi/$f" >/dev/null; then
+		echo "   ok   $f"
+	else
+		echo "   FAIL $f differs from userpatches/overlay/rock-4se-dsi/$f"
+		fail=1
+	fi
+done
 
 echo
 if [[ $fail -eq 0 ]]; then
